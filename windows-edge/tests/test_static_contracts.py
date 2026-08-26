@@ -387,7 +387,8 @@ class WindowsEdgeContracts(unittest.TestCase):
             self.assertIn("Manifest exceeds package resource limits", text)
 
         self.assertIn("function Write-ProtectedConfigAtomically", install)
-        self.assertIn("*S-1-5-32-544:F", install)
+        self.assertIn("*S-1-5-32-544:(OI)F", install)
+        self.assertNotIn("*S-1-5-32-544:F'", install)
         self.assertNotIn("*S-1-5-32-544:(WD,AD,DC)", install)
         self.assertLess(install.index("Protect-ConfigDirectory"), install.index("Write-ProtectedConfigAtomically"))
         self.assertIn("[IO.File]::Move($temporary,$Destination)", install)

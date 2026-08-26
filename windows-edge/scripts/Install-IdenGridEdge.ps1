@@ -284,9 +284,9 @@ function Protect-ConfigDirectory([string]$ConfigDirectory) {
         Invoke-Icacls -Path $parent -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
     }
     Invoke-Icacls -Path $ConfigDirectory -AclArguments @('/setowner','*S-1-5-18')
-    # Administrators can create/delete names for atomic replacement. The ACE is
-    # not inheritable, so Secret files never grant Administrators read access.
-    Invoke-Icacls -Path $ConfigDirectory -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)R','*S-1-5-32-544:F')
+    # Administrators can create/delete names and finish hardening temporary files.
+    # Object-only inheritance never grants access to the final file after /inheritance:r.
+    Invoke-Icacls -Path $ConfigDirectory -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)R','*S-1-5-32-544:(OI)F')
 }
 function Write-ProtectedConfigAtomically([string]$Destination,[byte[]]$Bytes) {
     $directory=[IO.Path]::GetDirectoryName($Destination)
