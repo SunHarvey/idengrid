@@ -468,6 +468,7 @@ class _CtypesWin32Bindings:
 
 _SYSTEM_SIDS = {"SY", "S-1-5-18"}
 _ADMIN_SIDS = {"BA", "S-1-5-32-544"}
+_TRUSTED_INSTALLER_SIDS = {"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"}
 _LOCAL_SERVICE_SIDS = {"LS", "S-1-5-19"}
 _WRITE_MASK = 0x10000000 | 0x40000000 | 0x000D0156
 _REPLACE_MASK = 0x10000000 | 0x40000000 | 0x000D0040
@@ -572,7 +573,10 @@ def _windows_settings_from_file(path: str, *, api: Any) -> Settings:
                 if immediate_parent
                 else _windows_ancestor_sddl_is_restricted(info.sddl)
             )
-            if info.owner_sid not in (_SYSTEM_SIDS | _ADMIN_SIDS) or not directory_acl_ok:
+            allowed_parent_owners = _SYSTEM_SIDS | _ADMIN_SIDS
+            if not immediate_parent:
+                allowed_parent_owners |= _TRUSTED_INSTALLER_SIDS
+            if info.owner_sid not in allowed_parent_owners or not directory_acl_ok:
                 raise RuntimeError("unsafe parent directory permissions")
             identities.add(info.identity)
             current = current.parent
@@ -588,9 +592,9 @@ def _windows_settings_from_file(path: str, *, api: Any) -> Settings:
             or _windows_path_key(root_info.final_path) != _windows_path_key(str(current))
         ):
             raise RuntimeError("unsafe config path")
-        if root_info.owner_sid not in (_SYSTEM_SIDS | _ADMIN_SIDS) or not (
-            _windows_ancestor_sddl_is_restricted(root_info.sddl)
-        ):
+        if root_info.owner_sid not in (
+            _SYSTEM_SIDS | _ADMIN_SIDS | _TRUSTED_INSTALLER_SIDS
+        ) or not (_windows_ancestor_sddl_is_restricted(root_info.sddl)):
             raise RuntimeError("unsafe parent directory permissions")
         raw = api.read_limited(leaf, _MAX_CONFIG_BYTES)
     except OSError as exc:

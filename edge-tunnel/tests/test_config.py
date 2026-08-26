@@ -301,13 +301,13 @@ class FakeWindowsConfigAPI:
         self.closed.append(handle)
 
 
-def windows_object(path, *, directory, sddl, identity=None, reparse=False):
+def windows_object(path, *, directory, sddl, identity=None, reparse=False, owner_sid=None):
     return WindowsObjectInfo(
         final_path=path,
         identity=identity or (7, hash(path)),
         is_directory=directory,
         is_reparse_point=reparse,
-        owner_sid="S-1-5-18" if not directory else "S-1-5-32-544",
+        owner_sid=owner_sid or ("S-1-5-18" if not directory else "S-1-5-32-544"),
         sddl=sddl,
     )
 
@@ -325,7 +325,12 @@ def safe_windows_objects():
             r"C:\ProgramData\IdenGrid", directory=True, sddl=directory_acl
         ),
         "c:\\programdata": windows_object(r"C:\ProgramData", directory=True, sddl=ancestor_acl),
-        "c:\\": windows_object("C:\\", directory=True, sddl=ancestor_acl),
+        "c:\\": windows_object(
+            "C:\\",
+            directory=True,
+            sddl=ancestor_acl,
+            owner_sid="S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+        ),
     }
 
 
