@@ -202,7 +202,8 @@ class WindowsEdgeContracts(unittest.TestCase):
         parameter_block = build.split("Set-StrictMode", 1)[0]
         self.assertNotIn("$PSScriptRoot", parameter_block)
         self.assertIn("$MyInvocation.MyCommand.Path", build)
-        self.assertIn("-c 'import aiohttp,cryptography,psutil,edge_tunnel'", build)
+        self.assertIn("-I -B -c 'import aiohttp,cryptography,psutil,edge_tunnel'", build)
+        self.assertIn("-I -B -m edge_tunnel --help", build)
         self.assertNotIn('print(\\"', build)
 
     def test_firewall_uninstall_and_transaction_contracts(self) -> None:
