@@ -129,7 +129,7 @@ Distributors must review and include upstream license texts before external rele
 "@ | Set-Content -LiteralPath (Join-Path $stage 'THIRD_PARTY_NOTICES.txt') -Encoding UTF8
 
     $python = Join-Path $runtime 'python.exe'
-    & $python -I -c 'import aiohttp, cryptography, psutil, edge_tunnel; print("runtime import check passed")'
+    & $python -I -c 'import aiohttp,cryptography,psutil,edge_tunnel'
     if ($LASTEXITCODE -ne 0) { throw 'Bundled Python import check failed.' }
     & $python -I -m edge_tunnel --help | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Bundled Edge CLI check failed.' }
