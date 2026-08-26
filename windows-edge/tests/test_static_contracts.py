@@ -428,7 +428,7 @@ class WindowsEdgeContracts(unittest.TestCase):
             self.assertIn("$name.Contains('//')", text, name)
             self.assertIn("$targetIdentity=$target.Normalize", text, name)
             self.assertIn("$targetIdentities.Add($targetIdentity)", text, name)
-            for reserved in ("CONIN\\$", "CONOUT\\$", "CLOCK\\$", "¹", "²", "³"):
+            for reserved in ("CONIN\\$", "CONOUT\\$", "CLOCK\\$", "\\u00B9", "\\u00B2", "\\u00B3"):
                 self.assertIn(reserved, text, name)
 
     def test_install_rollback_checks_both_fixed_services_before_binary_deletion(self) -> None:

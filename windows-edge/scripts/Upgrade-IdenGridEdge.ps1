@@ -124,7 +124,7 @@ function Expand-VerifiedBundle([string]$Archive,[string]$Destination) {
     $root=[IO.Path]::GetFullPath($Destination).TrimEnd('\')+'\'
     $targetIdentities=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $approved=New-Object Collections.Generic.List[object]
-    $reserved='^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?$';$total=0L
+    $reserved='^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|COM(?:[1-9]|\u00B9|\u00B2|\u00B3)|LPT(?:[1-9]|\u00B9|\u00B2|\u00B3))(?:\..*)?$';$total=0L
     $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
     try {
         if($zip.Entries.Count -gt $MaxEntries){throw 'Bundle ZIP exceeds 5000 entries.'}
