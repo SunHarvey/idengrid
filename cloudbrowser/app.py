@@ -7,6 +7,7 @@ import hmac
 import io
 import ipaddress
 import json
+import re
 import secrets
 import shlex
 import uuid
@@ -97,12 +98,24 @@ LINUX_EDGE_PACKAGE_PATH = Path("/data/dist/edge-tunnel.tar.gz")
 WINDOWS_EDGE_INSTALLER_PATH = Path("/data/windows-edge/scripts/Install-IdenGridEdge.ps1")
 WINDOWS_EDGE_RELEASE_MANIFEST_PATH = Path("/data/dist/release-manifest.json")
 WINDOWS_EDGE_RELEASE_SIGNATURE_PATH = Path("/data/dist/release-manifest.json.sig")
+WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64 = "Wf/s6zRs0+FjSCqM1BQb5vXIpyv4Ivxm5nAS2wWZGxk="
 LINUX_EDGE_PACKAGE_ROUTE = "/edge-package/edge-tunnel.tar.gz"
 
 
 def verified_windows_release() -> tuple[Path, str, str]:
     try:
-        document = json.loads(WINDOWS_EDGE_RELEASE_MANIFEST_PATH.read_text(encoding="ascii"))
+        manifest_raw = WINDOWS_EDGE_RELEASE_MANIFEST_PATH.read_bytes()
+        if len(manifest_raw) > 4096:
+            raise ValueError("invalid release manifest")
+        signature_text = WINDOWS_EDGE_RELEASE_SIGNATURE_PATH.read_text(encoding="ascii").strip()
+        signature = base64.b64decode(signature_text, validate=True)
+        public_key_raw = base64.b64decode(
+            WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64, validate=True
+        )
+        if len(signature) != 64 or len(public_key_raw) != 32:
+            raise ValueError("invalid release signature")
+        Ed25519PublicKey.from_public_bytes(public_key_raw).verify(signature, manifest_raw)
+        document = json.loads(manifest_raw.decode("ascii"))
         package = document["package"]
         if (
             set(document) != {"schema_version", "package"}
@@ -118,14 +131,23 @@ def verified_windows_release() -> tuple[Path, str, str]:
             or type(package["size"]) is not int
             or not 0 < package["size"] <= 8 * 1024**3
             or not isinstance(package["version"], str)
+            or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", package["version"])
+            is None
             or package["filename"]
             != f"IdenGrid-Edge-Windows-Server-2025-x64-v{package['version']}.zip"
-            or not WINDOWS_EDGE_RELEASE_SIGNATURE_PATH.is_file()
         ):
             raise ValueError("invalid release manifest")
         package_path = WINDOWS_EDGE_RELEASE_MANIFEST_PATH.parent / package["filename"]
         data = package_path.read_bytes()
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (
+        InvalidSignature,
+        OSError,
+        KeyError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
     actual = hashlib.sha256(data).hexdigest()
     if len(data) != package["size"] or not hmac.compare_digest(actual, package["sha256"]):

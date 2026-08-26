@@ -2,52 +2,57 @@
 [CmdletBinding(SupportsShouldProcess=$true,ConfirmImpact='High')]
 param([switch]$PurgeData)
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference='Stop'
 $ProgramRoot=Join-Path $env:ProgramFiles 'IdenGrid Edge'
 $ProgramDataRoot=Join-Path $env:ProgramData 'IdenGrid\Edge'
-$FirewallGroup='IdenGrid Edge Managed Rules'
-$FirewallDescription='Managed exclusively by IdenGrid Edge'
 function Assert-Administrator {
     $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
     $principal=New-Object Security.Principal.WindowsPrincipal($identity)
-    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run from an elevated Windows PowerShell session.' }
+    if(-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Run from an elevated Windows PowerShell session.'}
 }
-function Assert-AllowedRoot([string]$Path,[string]$Expected,[string]$Sentinel,[bool]$RequireSentinel) {
-    $full=[IO.Path]::GetFullPath($Path).TrimEnd('\')
-    $allowed=[IO.Path]::GetFullPath($Expected).TrimEnd('\')
-    if (-not $full.Equals($allowed,[StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing operation outside the fixed product root.' }
-    if (Test-Path -LiteralPath $full) {
-        if ((Get-Item -LiteralPath $full -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Product root cannot be a reparse point.' }
-        if ($RequireSentinel -and -not (Test-Path -LiteralPath (Join-Path $full $Sentinel) -PathType Leaf)) { throw 'Product installation sentinel is missing.' }
+function Assert-AllowedRoot([string]$Path,[string]$Expected,[string]$Sentinel,[bool]$RequireSentinel){
+    $full=[IO.Path]::GetFullPath($Path).TrimEnd('\');$allowed=[IO.Path]::GetFullPath($Expected).TrimEnd('\')
+    if(-not $full.Equals($allowed,[StringComparison]::OrdinalIgnoreCase)){throw 'Refusing operation outside the fixed product root.'}
+    if(Test-Path -LiteralPath $full){
+        if((Get-Item -LiteralPath $full -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Product root cannot be a reparse point.'}
+        if($RequireSentinel -and -not(Test-Path -LiteralPath (Join-Path $full $Sentinel) -PathType Leaf)){throw 'Product installation sentinel is missing.'}
     }
     return $full
 }
-function Invoke-WinSWChecked([string]$Wrapper,[string]$Action) {
+function Assert-ManagedJunction([string]$Path){
+    $item=Get-Item -LiteralPath $Path -Force
+    if(-not($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or [string]::IsNullOrWhiteSpace([string]$item.Target)){throw 'Current version junction is invalid.'}
+    $versions=[IO.Path]::GetFullPath((Join-Path $ProgramRoot 'versions')).TrimEnd('\')+'\'
+    $target=[IO.Path]::GetFullPath([string]$item.Target)
+    if(-not $target.StartsWith($versions,[StringComparison]::OrdinalIgnoreCase)){throw 'Current version junction escapes managed versions.'}
+    foreach($leaf in @('manifest.json','service\IdenGridEdgeService.exe','service\IdenGridEdgeGateway.exe')){if(-not(Test-Path -LiteralPath (Join-Path $target $leaf) -PathType Leaf)){throw 'Installed version is incomplete.'}}
+    return $target
+}
+function Invoke-WinSWChecked([string]$Wrapper,[string]$Action){
     & $Wrapper $Action 2>$null
     if ($LASTEXITCODE -ne 0) { throw "WinSW $Action failed; uninstall stopped before deleting files." }
 }
+function Assert-FirewallRuleMatchesState($Expected){
+    if($Expected.created -ne $true){throw 'Firewall state does not record a created rule.'}
+    $rule=Get-NetFirewallRule -Name ([string]$Expected.name) -ErrorAction Stop
+    $filter=$rule|Get-NetFirewallPortFilter
+    if($rule.DisplayName -ne $Expected.display_name -or $rule.Group -ne $Expected.group -or $rule.Description -ne $Expected.description -or [string]$rule.Enabled -ne [string]$Expected.enabled -or [string]$rule.Direction -ne [string]$Expected.direction -or [string]$rule.Action -ne [string]$Expected.action -or [string]$rule.Profile -ne [string]$Expected.profile -or [string]$filter.Protocol -ne [string]$Expected.protocol -or [string]$filter.LocalPort -ne [string]$Expected.local_port){throw 'Firewall rule no longer matches install state.'}
+}
 Assert-Administrator
 $ProgramRoot=Assert-AllowedRoot $ProgramRoot (Join-Path $env:ProgramFiles 'IdenGrid Edge') 'current\service\IdenGridEdgeService.exe' $true
-$ProgramDataRoot=Assert-AllowedRoot $ProgramDataRoot (Join-Path $env:ProgramData 'IdenGrid\Edge') 'state\install-state.json' $PurgeData.IsPresent
-$current=Join-Path $ProgramRoot 'current'
-if (Test-Path -LiteralPath $current) {
-    $gateway=Join-Path $current 'service\IdenGridEdgeGateway.exe'
-    $edge=Join-Path $current 'service\IdenGridEdgeService.exe'
-    if ((Test-Path -LiteralPath $gateway) -and $PSCmdlet.ShouldProcess('IdenGridEdgeGateway','Stop managed Gateway service')) { Invoke-WinSWChecked $gateway 'stop' }
-    if ((Test-Path -LiteralPath $edge) -and $PSCmdlet.ShouldProcess('IdenGridEdge','Stop managed Edge service')) { Invoke-WinSWChecked $edge 'stop' }
-    if ((Test-Path -LiteralPath $gateway) -and $PSCmdlet.ShouldProcess('IdenGridEdgeGateway','Uninstall managed Gateway service')) { Invoke-WinSWChecked $gateway 'uninstall' }
-    if ((Test-Path -LiteralPath $edge) -and $PSCmdlet.ShouldProcess('IdenGridEdge','Uninstall managed Edge service')) { Invoke-WinSWChecked $edge 'uninstall' }
-}
-$rules=@(Get-NetFirewallRule -Group $FirewallGroup -ErrorAction SilentlyContinue | Where-Object { $_.Description -eq $FirewallDescription -and $_.Name -in @('IdenGridEdge-HTTP','IdenGridEdge-HTTPS') })
-foreach($rule in $rules) {
-    if ($PSCmdlet.ShouldProcess($rule.Name,'Remove product-owned firewall rule')) { Remove-NetFirewallRule -Name $rule.Name -ErrorAction Stop }
-}
-if ((Test-Path -LiteralPath $ProgramRoot) -and $PSCmdlet.ShouldProcess($ProgramRoot,'Delete fixed IdenGrid Edge program root')) { Remove-Item -LiteralPath $ProgramRoot -Recurse -Force }
-if ($PurgeData) {
-    if ((Test-Path -LiteralPath $ProgramDataRoot) -and $PSCmdlet.ShouldProcess($ProgramDataRoot,'Permanently delete Edge config, logs, and certificate state')) {
-        Remove-Item -LiteralPath $ProgramDataRoot -Recurse -Force
-        Write-Output 'IdenGrid Edge and ProgramData were removed.'
-    } else { Write-Warning 'ProgramData purge was not performed; data was retained.' }
-} else {
-    Write-Output "IdenGrid Edge was removed. Data retained at $ProgramDataRoot."
-}
+$ProgramDataRoot=Assert-AllowedRoot $ProgramDataRoot (Join-Path $env:ProgramData 'IdenGrid\Edge') 'state\install-state.json' $true
+$statePath=Join-Path $ProgramDataRoot 'state\install-state.json'
+$state=Get-Content -LiteralPath $statePath -Raw|ConvertFrom-Json
+if($state.schema_version -ne 1 -or $state.firewall_rules -isnot [array]){throw 'Install state is invalid.'}
+$current=Join-Path $ProgramRoot 'current';$target=Assert-ManagedJunction $current
+$gateway=Join-Path $target 'service\IdenGridEdgeGateway.exe';$edge=Join-Path $target 'service\IdenGridEdgeService.exe'
+$state.firewall_rules|ForEach-Object{Assert-FirewallRuleMatchesState $_}
+$description=if ($PurgeData) {'Stop and uninstall both services, remove recorded firewall rules, program files, and ProgramData'}else{'Stop and uninstall both services, remove recorded firewall rules and program files'}
+if(-not $PSCmdlet.ShouldProcess('IdenGrid Edge',$description)){return}
+Invoke-WinSWChecked $gateway 'stop'
+Invoke-WinSWChecked $edge 'stop'
+Invoke-WinSWChecked $gateway 'uninstall'
+Invoke-WinSWChecked $edge 'uninstall'
+foreach($expected in $state.firewall_rules){Remove-NetFirewallRule -Name ([string]$expected.name) -ErrorAction Stop}
+Remove-Item -LiteralPath $ProgramRoot -Recurse -Force
+if ($PurgeData) {Remove-Item -LiteralPath $ProgramDataRoot -Recurse -Force;Write-Output 'IdenGrid Edge and ProgramData were removed.'}else{Write-Output "IdenGrid Edge was removed. Data retained at $ProgramDataRoot."}

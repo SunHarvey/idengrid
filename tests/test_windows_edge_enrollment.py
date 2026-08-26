@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
 
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -108,10 +112,20 @@ def configure_signed_release(tmp_path: Path, monkeypatch, version: str = "1.2.3"
         ),
         encoding="ascii",
     )
+    signing_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    public_key = signing_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
     signature = tmp_path / "release-manifest.json.sig"
-    signature.write_text("detached-signature-fixture\n", encoding="ascii")
+    signature.write_text(
+        base64.b64encode(signing_key.sign(manifest.read_bytes())).decode("ascii") + "\n",
+        encoding="ascii",
+    )
     monkeypatch.setattr(app_module, "WINDOWS_EDGE_RELEASE_MANIFEST_PATH", manifest)
     monkeypatch.setattr(app_module, "WINDOWS_EDGE_RELEASE_SIGNATURE_PATH", signature)
+    monkeypatch.setattr(
+        app_module, "WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64", base64.b64encode(public_key).decode()
+    )
     return package, digest, manifest, signature
 
 
@@ -150,6 +164,37 @@ def test_windows_release_routes_fail_closed_for_missing_or_mismatched_package(
     package.write_bytes(b"tampered")
     assert registration_system.get(f"/edge-package/{package.name}").status_code == 503
     assert manifest.is_file()
+
+
+@pytest.mark.parametrize("attack", ["forged", "truncated", "stale"])
+def test_windows_release_signature_failures_are_503_and_do_not_consume_claim(
+    registration_system, tmp_path: Path, monkeypatch, attack: str
+):
+    _, _, manifest, signature = configure_signed_release(tmp_path, monkeypatch)
+    if attack == "forged":
+        signature.write_text(base64.b64encode(b"x" * 64).decode(), encoding="ascii")
+    elif attack == "truncated":
+        signature.write_text(base64.b64encode(b"x" * 63).decode(), encoding="ascii")
+    else:
+        old_signature = signature.read_text(encoding="ascii")
+        document = json.loads(manifest.read_text(encoding="ascii"))
+        document["package"]["size"] += 1
+        manifest.write_text(json.dumps(document, separators=(",", ":")), encoding="ascii")
+        signature.write_text(old_signature, encoding="ascii")
+    created = _approved_windows_request(registration_system)
+
+    response = registration_system.post(
+        f"/api/node-registration-requests/{created['request_id']}/claim-approved",
+        headers=registration_auth(created),
+        json=claim_body(registration_system, created, created["_private"]),
+    )
+
+    assert response.status_code == 503
+    with registration_system.app.state.db() as db:
+        item = db.get(NodeRegistrationRequest, created["request_id"])
+        assert item.status == "approved"
+        assert item.registration_token_hash is not None
+        assert item.challenge_hash is not None
 
 
 def test_verified_edge_package_rejects_unknown_platform_explicitly():

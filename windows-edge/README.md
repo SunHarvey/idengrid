@@ -64,7 +64,7 @@ python windows-edge\tools\sign_release_manifest.py `
   --signature windows-edge\dist\release-manifest.json.sig
 ```
 
-Never commit the private-key file. Keep it outside the repository with restrictive ACLs and use an isolated signing runner. Replace the installer's `REPLACE_WITH_PRODUCTION_ED25519_PUBLIC_KEY` placeholder during release engineering. The placeholder deliberately fails closed.
+Never commit the private-key file. Keep it outside the repository with restrictive ACLs and use an isolated signing runner. The installer, upgrader, and control plane embed the same production Ed25519 public key; release manifests are verified before package selection or enrollment claim consumption.
 
 > Integration prerequisite: the packaged `edge_tunnel` CLI must implement the planned Windows `--config` protected-file entry point before service runtime acceptance. This branch intentionally does not alter the core.
 
@@ -95,9 +95,10 @@ For remote lab delivery, replace `-PackagePath` with an HTTPS `-PackageUrl`. The
 ## Upgrade and rollback
 
 ```powershell
-.\Upgrade-IdenGridEdge.ps1 -PackagePath C:\Staging\IdenGrid-Edge-new.zip `
-  -PackageSha256 '<64-hex-sha256>' -Version 1.1.0
+.\Upgrade-IdenGridEdge.ps1 -Server https://control.example.invalid
 ```
+
+Formal upgrades accept only `-Server`, verify the signed release manifest and final HTTPS download, bind filename/version/size/SHA-256, validate managed junction targets, and reject downgrades. An explicit `-LabConfig -PackagePath ... -PackageSha256 ... -Version ...` path remains available only for local lab testing.
 
 Upgrade extracts into a new immutable version, enforces manifest/version identity, verifies the closed file set and all hashes, and runs an offline import/CLI self-check before stopping services. It preserves the prior rollback junction while switching `current`. Failure removes the new version, restores the old junction, and requires both loopback Edge and public TLS Gateway health. ProgramData is never overwritten.
 

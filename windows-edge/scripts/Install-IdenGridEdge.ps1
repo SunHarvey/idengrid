@@ -20,7 +20,7 @@ $ProgramRoot = Join-Path $env:ProgramFiles 'IdenGrid Edge'
 $ProgramDataRoot = Join-Path $env:ProgramData 'IdenGrid\Edge'
 $ReleaseManifestRoute = '/edge-package/release-manifest.json'
 $ReleaseSignatureRoute = '/edge-package/release-manifest.json.sig'
-$ReleasePublicKeyBase64 = 'REPLACE_WITH_PRODUCTION_ED25519_PUBLIC_KEY'
+$ReleasePublicKeyBase64 = 'Wf/s6zRs0+FjSCqM1BQb5vXIpyv4Ivxm5nAS2wWZGxk='
 $FirewallGroup = 'IdenGrid Edge Managed Rules'
 $FirewallDescription = 'Managed exclusively by IdenGrid Edge'
 $reportToken = $null
@@ -33,7 +33,7 @@ $gatewayWrapper = $null
 $edgeServiceInstalled = $false
 $gatewayServiceInstalled = $false
 $currentJunctionCreated = $false
-$createdFirewallRules = New-Object Collections.Generic.List[string]
+$createdFirewallRules = New-Object Collections.Generic.List[object]
 $programDataBackup = $null
 
 function Test-Ed25519Signature([byte[]]$Message,[byte[]]$Signature,[byte[]]$PublicKey) {
@@ -61,8 +61,19 @@ namespace IdenGrid {
     }
     return [IdenGrid.Ed25519]::Verify($Message,$Signature,$PublicKey)
 }
+function Convert-HexBytes([string]$Hex) {
+    $bytes=New-Object byte[] ($Hex.Length/2)
+    for($i=0;$i -lt $bytes.Length;$i++){ $bytes[$i]=[Convert]::ToByte($Hex.Substring($i*2,2),16) }
+    return $bytes
+}
+function Assert-Rfc8032Verifier {
+    # RFC 8032 test vector 1 (empty message).
+    $pk=Convert-HexBytes 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'
+    $sig=Convert-HexBytes 'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b'
+    if (-not (Test-Ed25519Signature (New-Object byte[] 0) $sig $pk)) { throw 'RFC 8032 Ed25519 verifier self-test failed.' }
+}
 function Read-StrictReleaseManifest([string]$ManifestPath,[string]$SignaturePath) {
-    if ($ReleasePublicKeyBase64 -eq 'REPLACE_WITH_PRODUCTION_ED25519_PUBLIC_KEY') { throw 'Release signing public key is not configured.' }
+    Assert-Rfc8032Verifier
     try { $publicKey = [Convert]::FromBase64String($ReleasePublicKeyBase64); $signature = [Convert]::FromBase64String(([IO.File]::ReadAllText($SignaturePath,[Text.Encoding]::ASCII)).Trim()) } catch { throw 'Release signature encoding is invalid.' }
     $raw = [IO.File]::ReadAllBytes($ManifestPath)
     if ($raw.Length -gt 4096 -or $publicKey.Length -ne 32 -or $signature.Length -ne 64 -or -not (Test-Ed25519Signature $raw $signature $publicKey)) { throw 'Release manifest Ed25519 signature verification failed.' }
@@ -102,17 +113,21 @@ function Invoke-HttpsDownload([string]$Uri,[string]$Destination) {
 }
 function Assert-Claim($Claim,[string]$RawJson) {
     if ([Text.Encoding]::UTF8.GetByteCount($RawJson) -gt 65536) { throw 'Claim response exceeds 65536 bytes.' }
-    foreach ($name in @('package_sha256','domain','report_token','node_name','edge_ticket_secret','resources')) { if ($null -eq $Claim.PSObject.Properties[$name]) { throw 'Approved installation data is invalid.' } }
+    $claimFields=@('node_id','node_name','domain','edge_ticket_secret','resources','package_url','package_sha256','report_token','enrollment_id','install_admin_ssh_key')
+    if (@($Claim.PSObject.Properties.Name).Count -ne $claimFields.Count -or @($Claim.PSObject.Properties.Name | Where-Object { $_ -notin $claimFields }).Count -ne 0) { throw 'Approved installation data is invalid.' }
+    foreach ($name in $claimFields) { if ($null -eq $Claim.PSObject.Properties[$name]) { throw 'Approved installation data is invalid.' } }
     if ($Claim.package_sha256 -isnot [string] -or $Claim.package_sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Approved installation data is invalid.' }
+    if (($Claim.node_id -isnot [int] -and $Claim.node_id -isnot [long]) -or [long]$Claim.node_id -lt 1 -or $Claim.package_url -isnot [string] -or $Claim.package_url -ne ($Server + '/edge-package/' + $release.filename) -or ($Claim.enrollment_id -isnot [int] -and $Claim.enrollment_id -isnot [long]) -or [long]$Claim.enrollment_id -lt 1 -or $Claim.install_admin_ssh_key -isnot [bool]) { throw 'Approved installation data is invalid.' }
     if ($Claim.domain -isnot [string] -or $Claim.domain.Length -gt 253 -or $Claim.domain -notmatch '^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$') { throw 'Approved installation data is invalid.' }
-    if ($Claim.node_name -isnot [string] -or $Claim.node_name.Length -lt 1 -or $Claim.node_name.Length -gt 128 -or $Claim.node_name -notmatch '^[A-Za-z0-9_.-]+$') { throw 'Approved installation data is invalid.' }
+    if ($Claim.node_name -isnot [string] -or $Claim.node_name.Length -lt 1 -or $Claim.node_name.Length -gt 64 -or $Claim.node_name -notmatch '^[A-Za-z0-9_.-]+$') { throw 'Approved installation data is invalid.' }
     if ($Claim.edge_ticket_secret -isnot [string] -or $Claim.edge_ticket_secret.Length -lt 32 -or $Claim.edge_ticket_secret.Length -gt 512) { throw 'Approved installation data is invalid.' }
     if ($Claim.report_token -isnot [string] -or $Claim.report_token.Length -lt 16 -or $Claim.report_token.Length -gt 512) { throw 'Approved installation data is invalid.' }
     if ($Claim.resources -isnot [pscustomobject]) { throw 'Approved installation data is invalid.' }
-    foreach ($name in @('max_connections','max_frame_bytes','max_bytes','idle_timeout','max_duration','connect_timeout','ticket_max_ttl')) {
-        $property=$Claim.resources.PSObject.Properties[$name]
-        if ($null -eq $property -or ($property.Value -isnot [int] -and $property.Value -isnot [long]) -or [long]$property.Value -lt 1 -or [long]$property.Value -gt 1099511627776) { throw 'Approved installation data is invalid.' }
-    }
+    $resourceFields=@('max_connections','max_frame_bytes','max_bytes','idle_timeout','max_duration','connect_timeout','ticket_max_ttl')
+    if (@($Claim.resources.PSObject.Properties.Name).Count -ne $resourceFields.Count -or @($Claim.resources.PSObject.Properties.Name | Where-Object { $_ -notin $resourceFields }).Count -ne 0) { throw 'Approved installation data is invalid.' }
+    $limits=@{max_connections=65535;max_frame_bytes=67108864;max_bytes=1099511627776;ticket_max_ttl=300}
+    foreach ($name in $limits.Keys) { $v=$Claim.resources.$name; if (($v -isnot [int] -and $v -isnot [long]) -or [long]$v -lt 1 -or [long]$v -gt [long]$limits[$name]) { throw 'Approved installation data is invalid.' } }
+    foreach ($name in @('idle_timeout','max_duration','connect_timeout')) { $v=$Claim.resources.$name; if (($v -isnot [int] -and $v -isnot [long] -and $v -isnot [double]) -or [double]::IsNaN([double]$v) -or [double]::IsInfinity([double]$v) -or [double]$v -le 0) { throw 'Approved installation data is invalid.' } }
 }
 function Invoke-RobocopyMirror([string]$Source,[string]$Destination) {
     & robocopy.exe $Source $Destination /MIR /B /COPYALL /DCOPY:DAT /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS | Out-Null
@@ -175,11 +190,23 @@ function Set-Junction([string]$Path,[string]$Target) {
     if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
     New-Item -ItemType Junction -Path $Path -Target $Target | Out-Null
 }
-function Invoke-WinSW([string]$Wrapper,[string]$Action) {
+function Get-ServiceImagePath([string]$Name) {
+    return [string](Get-CimInstance Win32_Service -Filter ("Name='" + $Name.Replace("'","''") + "'") -ErrorAction SilentlyContinue).PathName
+}
+function Test-ServiceImagePath([string]$Name,[string]$Wrapper) {
+    $image=Get-ServiceImagePath $Name
+    if ([string]::IsNullOrWhiteSpace($image)) { return $false }
+    return $image.Trim().Trim('"').Equals([IO.Path]::GetFullPath($Wrapper),[StringComparison]::OrdinalIgnoreCase)
+}
+function Assert-ServiceNamesAvailable {
+    foreach($name in @('IdenGridEdge','IdenGridEdgeGateway')) { if (Get-Service -Name $name -ErrorAction SilentlyContinue) { throw "A service named $name already exists." } }
+}
+function Invoke-WinSW([string]$Wrapper,[string]$Action,[string]$ServiceName) {
     & $Wrapper $Action
     if ($LASTEXITCODE -ne 0) {
-        if (Get-Service -Name 'IdenGridEdge' -ErrorAction SilentlyContinue) { $script:edgeServiceInstalled=$true }
-        if (Get-Service -Name 'IdenGridEdgeGateway' -ErrorAction SilentlyContinue) { $script:gatewayServiceInstalled=$true }
+        if ($Action -eq 'install' -and (Test-ServiceImagePath $ServiceName $Wrapper)) {
+            if ($ServiceName -eq 'IdenGridEdge') { $script:edgeServiceInstalled=$true } else { $script:gatewayServiceInstalled=$true }
+        }
         throw "Service action failed: $Action"
     }
 }
@@ -191,6 +218,14 @@ function Assert-FirewallRule([string]$Name,[int]$Port) {
     $rule=Get-NetFirewallRule -Name $Name -ErrorAction Stop
     $filter=$rule | Get-NetFirewallPortFilter
     if ($rule.Group -ne $FirewallGroup -or $rule.Description -ne $FirewallDescription -or $rule.Enabled -ne 'True' -or $rule.Direction -ne 'Inbound' -or $rule.Action -ne 'Allow' -or $rule.Profile -ne 'Any' -or $filter.Protocol -ne 'TCP' -or [string]$filter.LocalPort -ne [string]$Port) { throw 'Managed firewall rule verification failed.' }
+}
+function Assert-ExactConfigAcl([string]$Path) {
+    $acl=Get-Acl -LiteralPath $Path
+    if ($acl.Owner -notin @('NT AUTHORITY\SYSTEM','S-1-5-18')) { throw 'Config owner verification failed.' }
+    $rules=@($acl.Access | Where-Object { -not $_.IsInherited })
+    $system=@($rules | Where-Object { $_.IdentityReference.Value -in @('NT AUTHORITY\SYSTEM','S-1-5-18') -and $_.AccessControlType -eq 'Allow' -and [int]$_.FileSystemRights -eq 0x001F01FF })
+    $local=@($rules | Where-Object { $_.IdentityReference.Value -in @('NT AUTHORITY\LOCAL SERVICE','S-1-5-19') -and $_.AccessControlType -eq 'Allow' -and [int]$_.FileSystemRights -eq 0x00120089 })
+    if ($rules.Count -ne 2 -or $system.Count -ne 1 -or $local.Count -ne 1) { throw 'Config DACL verification failed.' }
 }
 function Invoke-InstallRollback {
     $previousErrorAction = $ErrorActionPreference
@@ -204,8 +239,8 @@ function Invoke-InstallRollback {
             & $edgeWrapper stop 2>$null
             & $edgeWrapper uninstall 2>$null
         }
-        foreach ($ruleName in $createdFirewallRules) {
-            Remove-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
+        foreach ($rule in $createdFirewallRules) {
+            Remove-NetFirewallRule -Name $rule.name -ErrorAction SilentlyContinue
         }
         $current = Join-Path $ProgramRoot 'current'
         if ($currentJunctionCreated -and (Test-Path -LiteralPath $current)) {
@@ -257,6 +292,7 @@ function Report-InstallPhase([string]$Phase,[string]$ErrorText = $null) {
 
 Assert-Administrator
 Assert-SupportedHost
+Assert-ServiceNamesAvailable
 if (Test-Path -LiteralPath (Join-Path $ProgramRoot 'current')) { throw 'IdenGrid Edge is already installed; use the upgrade script.' }
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('idengrid-edge-install-' + [Guid]::NewGuid().ToString('N'))
 $expanded = Join-Path $temp 'expanded'
@@ -327,20 +363,24 @@ try {
         $edgeConfig = [pscustomobject][ordered]@{
             schema_version=1; node_id=[string]$claim.node_name; ticket_secret=[string]$claim.edge_ticket_secret
             max_connections=[int]$claim.resources.max_connections; max_frame_bytes=[int]$claim.resources.max_frame_bytes
-            max_bytes_per_connection=[long]$claim.resources.max_bytes; idle_timeout=[int]$claim.resources.idle_timeout
-            max_connection_seconds=[int]$claim.resources.max_duration; connect_timeout=[int]$claim.resources.connect_timeout
+            max_bytes_per_connection=[long]$claim.resources.max_bytes; idle_timeout=[double]$claim.resources.idle_timeout
+            max_connection_seconds=[double]$claim.resources.max_duration; connect_timeout=[double]$claim.resources.connect_timeout
             ticket_max_ttl=[int]$claim.resources.ticket_max_ttl
         }
         $edgeConfigJson = $edgeConfig | ConvertTo-Json -Compress
         [IO.File]::WriteAllText($configTarget,$edgeConfigJson,(New-Object Text.UTF8Encoding($false)))
+        Invoke-Icacls -Path $configTarget -AclArguments @('/setowner','*S-1-5-18')
         Invoke-Icacls -Path $configTarget -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:F','*S-1-5-19:R')
+        Assert-ExactConfigAcl $configTarget
         Remove-Variable claimJson -ErrorAction SilentlyContinue
         Remove-Variable claim -ErrorAction SilentlyContinue
         Remove-Variable edgeConfig -ErrorAction SilentlyContinue
         Remove-Variable edgeConfigJson -ErrorAction SilentlyContinue
     } else {
         Copy-Item -LiteralPath $ProtectedConfigPath -Destination $configTarget -Force
+        Invoke-Icacls -Path $configTarget -AclArguments @('/setowner','*S-1-5-18')
         Invoke-Icacls -Path $configTarget -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:F','*S-1-5-19:R')
+        Assert-ExactConfigAcl $configTarget
     }
     Invoke-Icacls -Path (Join-Path $ProgramDataRoot 'config') -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)R')
     $currentPhase = 'configuring'
@@ -355,26 +395,24 @@ try {
     $currentJunctionCreated = $true
     $edgeWrapper = Join-Path $ProgramRoot 'current\service\IdenGridEdgeService.exe'
     $gatewayWrapper = Join-Path $ProgramRoot 'current\service\IdenGridEdgeGateway.exe'
-    Invoke-WinSW $edgeWrapper 'install'
+    Invoke-WinSW $edgeWrapper 'install' 'IdenGridEdge'
     $edgeServiceInstalled = $true
-    Invoke-WinSW $gatewayWrapper 'install'
+    Invoke-WinSW $gatewayWrapper 'install' 'IdenGridEdgeGateway'
     $gatewayServiceInstalled = $true
-    foreach ($rule in @(@{Name='IdenGridEdge-HTTP';Display='IdenGrid Edge HTTP';Port=80},@{Name='IdenGridEdge-HTTPS';Display='IdenGrid Edge HTTPS';Port=443})) {
-        if (-not (Get-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name $rule.Name -DisplayName $rule.Display -Group $FirewallGroup -Description $FirewallDescription -Direction Inbound -Action Allow -Enabled True -Protocol TCP -LocalPort $rule.Port -Profile Any | Out-Null
-            $createdFirewallRules.Add($rule.Name)
-        }
+    foreach ($rule in @(@{Name=('IdenGridEdge-HTTP-'+[Guid]::NewGuid().ToString('N'));Display='IdenGrid Edge HTTP';Port=80},@{Name=('IdenGridEdge-HTTPS-'+[Guid]::NewGuid().ToString('N'));Display='IdenGrid Edge HTTPS';Port=443})) {
+        New-NetFirewallRule -Name $rule.Name -DisplayName $rule.Display -Group $FirewallGroup -Description $FirewallDescription -Direction Inbound -Action Allow -Enabled True -Protocol TCP -LocalPort $rule.Port -Profile Any | Out-Null
+        $createdFirewallRules.Add([pscustomobject][ordered]@{name=$rule.Name;display_name=$rule.Display;group=$FirewallGroup;description=$FirewallDescription;direction='Inbound';action='Allow';enabled='True';protocol='TCP';local_port=$rule.Port;profile='Any';created=$true})
         Assert-FirewallRule $rule.Name $rule.Port
     }
     $currentPhase = 'service'
-    Invoke-WinSW $edgeWrapper 'start'
+    Invoke-WinSW $edgeWrapper 'start' 'IdenGridEdge'
     Wait-EdgeHealth
     Report-InstallPhase 'service'
     $currentPhase = 'gateway'
-    Invoke-WinSW $gatewayWrapper 'start'
+    Invoke-WinSW $gatewayWrapper 'start' 'IdenGridEdgeGateway'
     Wait-PublicHealth $Hostname
     Report-InstallPhase 'gateway'
-    [pscustomobject][ordered]@{schema_version=1;version=$Version;hostname=$Hostname.ToLowerInvariant();installed_at=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $ProgramDataRoot 'state\install-state.json') -Encoding UTF8
+    [pscustomobject][ordered]@{schema_version=1;version=$Version;hostname=$Hostname.ToLowerInvariant();installed_at=[DateTime]::UtcNow.ToString('o');firewall_rules=@($createdFirewallRules)} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ProgramDataRoot 'state\install-state.json') -Encoding UTF8
     $currentPhase = 'ready'
     Report-InstallPhase 'ready'
     Write-Output "IdenGrid Edge $Version installed."
