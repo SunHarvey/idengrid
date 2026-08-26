@@ -5,9 +5,8 @@ import math
 import ntpath
 import os
 import re
-import stat
 from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import PureWindowsPath
 from typing import Any
 
 _NODE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
@@ -30,6 +29,11 @@ _INTEGER_LIMITS = {
     "max_frame_bytes": 64 * 1024 * 1024,
     "max_bytes_per_connection": 1024**4,
     "ticket_max_ttl": 300,
+}
+_FLOAT_LIMITS = {
+    "idle_timeout": 3_600,
+    "max_connection_seconds": 32_400,
+    "connect_timeout": 120,
 }
 
 
@@ -69,22 +73,9 @@ class Settings:
 
     @classmethod
     def from_file(cls, path: str | os.PathLike[str]) -> Settings:
-        if os.name == "nt":
-            return _windows_settings_from_file(os.path.abspath(path), api=Win32ConfigAPI())
-        config_path = Path(path).absolute()
-        _validate_safe_path(config_path)
-        descriptor = _open_config(config_path)
-        try:
-            file_stat = os.fstat(descriptor)
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise RuntimeError("unsafe config path")
-            if not _permissions_are_restricted(config_path, file_stat.st_mode):
-                raise RuntimeError("unsafe config permissions")
-            raw = _read_limited(descriptor)
-        finally:
-            os.close(descriptor)
-        data = _parse_json(raw)
-        return _settings_from_mapping(data)
+        if os.name != "nt":
+            raise RuntimeError("file configuration is supported only on Windows")
+        return _windows_settings_from_file(os.path.abspath(path), api=Win32ConfigAPI())
 
 
 def _validate_identity(node: Any, secret: bytes, *, env: bool = False) -> None:
@@ -107,14 +98,17 @@ def _validate_limits(settings: Settings) -> None:
         "max_bytes_per_connection": settings.max_bytes_per_connection,
         "ticket_max_ttl": settings.ticket_max_ttl,
     }
-    floats = (
-        settings.idle_timeout,
-        settings.max_connection_seconds,
-        settings.connect_timeout,
-    )
+    float_values = {
+        "idle_timeout": settings.idle_timeout,
+        "max_connection_seconds": settings.max_connection_seconds,
+        "connect_timeout": settings.connect_timeout,
+    }
     if any(
         value <= 0 or value > _INTEGER_LIMITS[name] for name, value in integer_values.items()
-    ) or any(not math.isfinite(value) or value <= 0 for value in floats):
+    ) or any(
+        not math.isfinite(value) or value <= 0 or value > _FLOAT_LIMITS[name]
+        for name, value in float_values.items()
+    ):
         raise RuntimeError("invalid edge configuration limit")
 
 
@@ -135,11 +129,12 @@ def _settings_from_mapping(data: dict[str, Any]) -> Settings:
     ):
         if type(data[field]) is not int or data[field] <= 0 or data[field] > _INTEGER_LIMITS[field]:
             raise RuntimeError(f"invalid config field: {field}")
-    for field in ("idle_timeout", "max_connection_seconds", "connect_timeout"):
+    for field, maximum in _FLOAT_LIMITS.items():
         if (
             type(data[field]) not in (int, float)
             or not math.isfinite(data[field])
             or data[field] <= 0
+            or data[field] > maximum
         ):
             raise RuntimeError(f"invalid config field: {field}")
     if not isinstance(data["ticket_secret"], str):
@@ -160,46 +155,6 @@ def _settings_from_mapping(data: dict[str, Any]) -> Settings:
         connect_timeout=float(data["connect_timeout"]),
         ticket_max_ttl=data["ticket_max_ttl"],
     )
-
-
-def _validate_safe_path(path: Path) -> None:
-    current = path
-    while current != current.parent:
-        try:
-            details = os.lstat(current)
-        except FileNotFoundError:
-            if current == path:
-                raise RuntimeError("config file is unavailable") from None
-            current = current.parent
-            continue
-        if stat.S_ISLNK(details.st_mode) or (
-            getattr(details, "st_file_attributes", 0) & _REPARSE_POINT
-        ):
-            raise RuntimeError("unsafe config path")
-        current = current.parent
-
-
-def _open_config(path: Path) -> int:
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        return os.open(path, flags)
-    except OSError as exc:
-        raise RuntimeError("config file is unavailable") from exc
-
-
-def _read_limited(descriptor: int) -> bytes:
-    if os.fstat(descriptor).st_size > _MAX_CONFIG_BYTES:
-        raise RuntimeError("config file is too large")
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = os.read(descriptor, _MAX_CONFIG_BYTES + 1 - total)
-        if not chunk:
-            return b"".join(chunks)
-        chunks.append(chunk)
-        total += len(chunk)
-        if total > _MAX_CONFIG_BYTES:
-            raise RuntimeError("config file is too large")
 
 
 def _parse_json(raw: bytes) -> dict[str, Any]:
@@ -225,10 +180,6 @@ def _parse_json(raw: bytes) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RuntimeError("config root must be an object")  # noqa: TRY004
     return data
-
-
-def _permissions_are_restricted(path: Path, mode: int) -> bool:
-    return mode & (stat.S_IRWXG | stat.S_IRWXO) == 0
 
 
 @dataclass(frozen=True)
