@@ -1,0 +1,31 @@
+[Unit]
+Description=IdenGrid control API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=idengrid-control
+Group=idengrid-control
+WorkingDirectory=/opt/idengrid
+EnvironmentFile=/etc/idengrid/control.env
+ExecStart=/opt/idengrid/.venv/bin/uvicorn cloudbrowser.main:app --host 127.0.0.1 --port ${PORT} --proxy-headers --no-access-log
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/idengrid
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools==80.10.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edge-wss-tunnel"
+version = "1.0.0"
+description = "Node-scoped authenticated WSS TCP relay"
+requires-python = ">=3.11"
+dependencies = ["aiohttp==3.14.3"]
+
+[project.scripts]
+edge-tunnel = "edge_tunnel.__main__:main"
+
+[tool.setuptools]
+packages = ["edge_tunnel"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]

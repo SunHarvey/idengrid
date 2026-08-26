@@ -1,0 +1,6 @@
+{
+  "ticket": "single-use-edge-ticket",
+  "lease_id": "0123456789abcdef0123456789abcdef",
+  "edge_endpoint": "https://edge.example",
+  "expires_in": 60
+}

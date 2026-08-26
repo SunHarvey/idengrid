@@ -1,0 +1,17 @@
+<Application
+    x:Class="IdenGrid.Windows.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <Color x:Key="BrandNavy">#0B1739</Color>
+        <Color x:Key="BrandBlue">#315CFF</Color>
+        <Color x:Key="BrandAqua">#28C7B7</Color>
+        <Color x:Key="BrandInk">#10182B</Color>
+        <Color x:Key="BrandSlate">#66738B</Color>
+        <SolidColorBrush x:Key="BrandNavyBrush" Color="{StaticResource BrandNavy}" />
+        <SolidColorBrush x:Key="BrandBlueBrush" Color="{StaticResource BrandBlue}" />
+        <SolidColorBrush x:Key="BrandAquaBrush" Color="{StaticResource BrandAqua}" />
+        <SolidColorBrush x:Key="BrandInkBrush" Color="{StaticResource BrandInk}" />
+        <SolidColorBrush x:Key="BrandSlateBrush" Color="{StaticResource BrandSlate}" />
+    </Application.Resources>
+</Application>

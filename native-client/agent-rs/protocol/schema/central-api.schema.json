@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idengrid.invalid/protocol/central-api.schema.json",
+  "title": "IdenGrid Native Store API DTOs",
+  "$defs": {
+    "connectRequest": {
+      "type": "object", "additionalProperties": false, "required": ["device_id"],
+      "properties": {"device_id": {"type": "string", "minLength": 3, "maxLength": 100, "pattern": "^[A-Za-z0-9._-]+$"}}
+    },
+    "heartbeatRequest": {
+      "type": "object", "additionalProperties": false, "required": ["lease_id", "device_id"],
+      "properties": {"lease_id": {"type": "string", "minLength": 32, "maxLength": 64}, "device_id": {"type": "string", "minLength": 3, "maxLength": 100}}
+    },
+    "ticketRequest": {
+      "type": "object", "additionalProperties": false, "required": ["host", "port", "lease_id", "device_id"],
+      "properties": {"host": {"type": "string", "minLength": 1, "maxLength": 253}, "port": {"enum": [80, 443]}, "lease_id": {"type": "string", "minLength": 32, "maxLength": 64}, "device_id": {"type": "string", "minLength": 3, "maxLength": 100}}
+    },
+    "disconnectRequest": {
+      "type": "object", "additionalProperties": false, "required": ["lease_id", "device_id"],
+      "properties": {"lease_id": {"type": "string", "minLength": 32, "maxLength": 64}, "device_id": {"type": "string", "minLength": 3, "maxLength": 100}}
+    },
+    "ticketResponse": {
+      "type": "object", "required": ["ticket", "lease_id", "edge_endpoint", "expires_in"],
+      "properties": {"ticket": {"type": "string", "minLength": 1}, "lease_id": {"type": "string", "minLength": 1}, "edge_endpoint": {"type": "string", "format": "uri"}, "expires_in": {"type": "integer", "minimum": 1, "maximum": 60}}
+    }
+  }
+}

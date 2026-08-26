@@ -1,0 +1,12 @@
+[
+  {
+    "id": 42,
+    "label": "Singapore Store",
+    "enabled": true,
+    "edge_node_name": "edge-sg-1",
+    "edge_endpoint": "https://edge.example",
+    "expected_egress_ips": ["203.0.113.10"],
+    "connection_status": "disconnected",
+    "health_status": "healthy"
+  }
+]

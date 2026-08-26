@@ -1,0 +1,20 @@
+{
+	admin 127.0.0.1:2019
+}
+
+{$IDENGRID_APP_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		X-Frame-Options "SAMEORIGIN"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:{$IDENGRID_API_PORT} {
+		header_up X-Forwarded-Proto https
+	}
+}

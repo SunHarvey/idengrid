@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>IdenGrid.Windows</AssemblyName>
+    <RootNamespace>IdenGrid.Windows.Wpf</RootNamespace>
+    <ApplicationIcon>Assets\idengrid.ico</ApplicationIcon>
+    <ClientConfigPath Condition="'$(ClientConfigPath)' == ''">Resources\client-config.json</ClientConfigPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Drawing.Common" Version="10.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <ProjectReference Include="..\IdenGrid.Core\IdenGrid.Core.csproj" />
+    <Resource Include="Assets\idengrid-64.png" />
+    <EmbeddedResource Include="$(ClientConfigPath)" LogicalName="IdenGrid.ClientConfig.json" />
+    <Content Include="Assets\idengrid.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Components\Extension\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+</Project>

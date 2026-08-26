@@ -1,0 +1,10 @@
+{
+  "$schema": "./chromium-manifest.schema.json",
+  "schemaVersion": 1,
+  "architecture": "arm64",
+  "revision": "1681956",
+  "url": "https://commondatastorage.googleapis.com/chromium-browser-snapshots/Mac_Arm/1681956/chrome-mac.zip",
+  "sha256": "569fe550e15e4ec80fde602bbb8d829af208a588af3c01d2ae0988603c89dcdf",
+  "archiveRoot": "chrome-mac/Chromium.app",
+  "executable": "chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+}

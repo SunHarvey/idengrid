@@ -1,0 +1,113 @@
+<Window
+    x:Class="IdenGrid.Windows.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="IdenGrid 澜序">
+    <Grid Background="{StaticResource BrandNavyBrush}">
+        <Ellipse Width="520" Height="520" Fill="#20315CFF"
+                 HorizontalAlignment="Right" VerticalAlignment="Top"
+                 Margin="0,-250,-180,0" />
+        <Ellipse Width="360" Height="360" Fill="#2028C7B7"
+                 HorizontalAlignment="Left" VerticalAlignment="Bottom"
+                 Margin="-150,0,0,-170" />
+
+        <Border x:Name="LoginPanel" Width="460" Padding="36,32" Background="White"
+                CornerRadius="18" HorizontalAlignment="Center"
+                VerticalAlignment="Center">
+            <Border.Shadow>
+                <ThemeShadow />
+            </Border.Shadow>
+            <StackPanel Spacing="12">
+                <Border Width="82" Height="82" CornerRadius="18"
+                        Background="{StaticResource BrandBlueBrush}"
+                        HorizontalAlignment="Center">
+                    <Grid>
+                        <TextBlock Text="IG" Foreground="White" FontSize="28"
+                                   FontWeight="Bold" HorizontalAlignment="Center"
+                                   VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
+                <TextBlock Text="澜序" Foreground="{StaticResource BrandInkBrush}"
+                           FontSize="34" FontWeight="Bold"
+                           HorizontalAlignment="Center" Margin="0,4,0,0" />
+                <TextBlock Text="IDENGRID CLOUD BROWSER"
+                           Foreground="{StaticResource BrandBlueBrush}"
+                           FontSize="13" FontWeight="SemiBold"
+                           CharacterSpacing="180" HorizontalAlignment="Center" />
+                <TextBlock Text="环境独立，协作从容"
+                           Foreground="{StaticResource BrandSlateBrush}"
+                           FontSize="16" HorizontalAlignment="Center"
+                           Margin="0,2,0,12" />
+
+                <TextBox x:Name="UsernameBox" Header="用户名"
+                         PlaceholderText="输入用户名" FontSize="16" />
+                <PasswordBox x:Name="PasswordBox" Header="密码"
+                             PlaceholderText="输入密码" FontSize="16" />
+                <Button x:Name="LoginButton" Content="登录" Height="46" Click="LoginClick"
+                        FontSize="16" FontWeight="SemiBold"
+                        HorizontalAlignment="Stretch"
+                        Background="{StaticResource BrandBlueBrush}"
+                        Foreground="White" Margin="0,8,0,0" />
+                <TextBlock x:Name="StatusText" Text="Windows客户端开发构建"
+                           Foreground="{StaticResource BrandSlateBrush}"
+                           FontSize="14" HorizontalAlignment="Center" />
+                <Button Content="退出应用" Click="ExitApplication"
+                        HorizontalAlignment="Center" Background="Transparent"
+                        Foreground="{StaticResource BrandSlateBrush}" />
+            </StackPanel>
+        </Border>
+
+        <Grid x:Name="StorePanel" Visibility="Collapsed" Background="#F4F7FB">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid Grid.Row="0" Background="{StaticResource BrandNavyBrush}" Padding="28,18">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="IdenGrid" Foreground="White" FontSize="26" FontWeight="Bold" />
+                    <TextBlock Text="云端店铺工作空间" Foreground="#B8C2D9" FontSize="14" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                    <Button Content="刷新" Click="RefreshClick" />
+                    <Button Content="退出登录" Click="LogoutClick" />
+                    <Button Content="退出应用" Click="ExitApplication" />
+                </StackPanel>
+            </Grid>
+            <TextBox x:Name="SearchBox" Grid.Row="1" Margin="24,20,24,10"
+                     PlaceholderText="搜索店铺" TextChanged="SearchChanged" />
+            <ListView x:Name="StoreList" Grid.Row="2" Margin="24,8"
+                      ItemsSource="{x:Bind VisibleStores}">
+                <ListView.ItemTemplate>
+                    <DataTemplate>
+                        <Grid MinHeight="104" Padding="18,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border Background="{StaticResource BrandAquaBrush}" CornerRadius="4" />
+                            <StackPanel Grid.Column="1" Margin="16,0" Spacing="5">
+                                <TextBlock Text="{Binding Name}" FontSize="21" FontWeight="Bold"
+                                           Foreground="{StaticResource BrandInkBrush}" />
+                                <TextBlock Text="{Binding NodeLine}" FontSize="15"
+                                           Foreground="{StaticResource BrandSlateBrush}" />
+                                <TextBlock Text="{Binding StatusLine}" FontSize="14"
+                                           Foreground="{StaticResource BrandSlateBrush}" />
+                            </StackPanel>
+                            <Button Grid.Column="2" Content="启动" IsEnabled="False"
+                                    ToolTipService.ToolTip="Agent链路将在下一阶段接入" />
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+            <TextBlock x:Name="WorkspaceStatus" Grid.Row="3" Margin="28,8,28,18"
+                       Foreground="{StaticResource BrandSlateBrush}" />
+        </Grid>
+    </Grid>
+</Window>

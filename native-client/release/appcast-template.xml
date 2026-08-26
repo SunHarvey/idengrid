@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>
+<title>IdenGrid 更新</title><link>https://api.example.com/updates/macos-arm64/appcast.xml</link><description>IdenGrid macOS 更新</description><language>zh-CN</language>
+<item><title>VERSION_PLACEHOLDER</title><sparkle:version>BUILD_PLACEHOLDER</sparkle:version><sparkle:shortVersionString>VERSION_PLACEHOLDER</sparkle:shortVersionString><pubDate>DATE_PLACEHOLDER</pubDate><enclosure url="DMG_URL_PLACEHOLDER" sparkle:edSignature="SPARKLE_SIGNATURE_PLACEHOLDER" length="DMG_LENGTH_PLACEHOLDER" type="application/octet-stream"/></item>
+</channel></rss>

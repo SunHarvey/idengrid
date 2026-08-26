@@ -1,0 +1,18 @@
+[Unit]
+Description=Probe IdenGrid Edge health
+After=network-online.target idengrid-control.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=idengrid-control
+Group=idengrid-control
+WorkingDirectory=/opt/idengrid
+EnvironmentFile=/etc/idengrid/control.env
+ExecStart=/opt/idengrid/.venv/bin/python /opt/idengrid/scripts/monitor_edge_health.py
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/idengrid

@@ -1,0 +1,19 @@
+# Replace the hostname for each node. Caddy obtains and renews TLS.
+edge.example.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:8787 {
+		# Longer than the 8-hour pilot connection duration.
+		stream_timeout 9h
+		transport http {
+			response_header_timeout 10s
+		}
+	}
+}

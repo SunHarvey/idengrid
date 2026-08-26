@@ -1,0 +1,29 @@
+services:
+  mysql:
+    image: docker.io/library/mysql:8.4
+    restart: unless-stopped
+    env_file:
+      - mysql.env
+    environment:
+      TZ: Asia/Singapore
+    command:
+      - --default-time-zone=+08:00
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - idengrid-mysql-data:/var/lib/mysql
+      - ./my.cnf:/etc/mysql/conf.d/idengrid.cnf:ro,Z
+      - ./init:/docker-entrypoint-initdb.d:ro,Z
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'mysqladmin ping -h 127.0.0.1 -uroot -p"$${MYSQL_ROOT_PASSWORD}" --silent'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  idengrid-mysql-data:

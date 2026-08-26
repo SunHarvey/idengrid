@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    {
+      "name": "edge-example",
+      "endpoint": "https://edge.example.com",
+      "expected_public_ipv4": "192.0.2.10",
+      "enabled": false
+    }
+  ],
+  "stores": [
+    {
+      "name": "Example Store",
+      "node": "edge-example",
+      "enabled": false
+    }
+  ]
+}

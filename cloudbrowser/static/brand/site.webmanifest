@@ -1,0 +1,21 @@
+{
+  "name": "澜序 IdenGrid",
+  "short_name": "澜序",
+  "description": "IdenGrid cloud browser workspace",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F4F7FB",
+  "theme_color": "#0B1739",
+  "icons": [
+    {
+      "src": "/static/brand/idengrid-32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/brand/idengrid-64.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    }
+  ]
+}

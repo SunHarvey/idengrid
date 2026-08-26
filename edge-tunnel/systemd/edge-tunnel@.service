@@ -1,0 +1,34 @@
+[Unit]
+Description=Authenticated Edge WSS tunnel (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=/etc/edge-tunnel/%i.env
+WorkingDirectory=/opt/edge-tunnel
+ExecStart=/opt/edge-tunnel/venv/bin/python -m edge_tunnel --port 8787
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6
+UMask=0077
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

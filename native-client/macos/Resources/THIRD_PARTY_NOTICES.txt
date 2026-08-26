@@ -1,0 +1,5 @@
+IdenGrid macOS Client third-party notices
+
+Sparkle 2: Copyright Sparkle Project contributors; MIT License.
+Chromium: redistributed only from the pinned release artifact; see the bundled Chromium LICENSE and credits.
+IdenGrid Agent: license materials must accompany the supplied release artifact.

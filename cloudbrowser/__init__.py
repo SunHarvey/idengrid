@@ -1,0 +1,1 @@
+"""Open cloud browser MVP."""

@@ -1,0 +1,14 @@
+:root {
+  --idengrid-navy: #0b1739;
+  --idengrid-blue: #315cff;
+  --idengrid-aqua: #28c7b7;
+  --idengrid-ink: #10182b;
+  --idengrid-slate: #66738b;
+  --idengrid-mist: #f4f7fb;
+  --idengrid-white: #ffffff;
+  --idengrid-radius-sm: 8px;
+  --idengrid-radius-md: 12px;
+  --idengrid-radius-lg: 18px;
+  --idengrid-font-latin: Inter, Manrope, Arial, system-ui, sans-serif;
+  --idengrid-font-cjk: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+}

@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "IdenGrid Store Identity",
+  "version": "1.1.0",
+  "description": "Shows the local store identity for this isolated browser profile.",
+  "permissions": ["privacy"],
+  "background": {"service_worker": "worker.js"},
+  "action": {"default_popup": "popup.html", "default_title": "IdenGrid 店铺身份"},
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["identity-utils.js", "title-prefix.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

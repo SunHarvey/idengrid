@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idengrid.invalid/protocol/control-request.schema.json",
+  "title": "IdenGrid Agent Control Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability", "command"],
+  "properties": {
+    "capability": {"type": "string", "minLength": 32},
+    "command": {"enum": ["status", "shutdown"]}
+  }
+}

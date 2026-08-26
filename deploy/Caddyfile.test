@@ -1,0 +1,14 @@
+https://localhost:8443 {
+  tls internal
+  encode zstd gzip
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "same-origin"
+    X-Frame-Options "SAMEORIGIN"
+    -Server
+  }
+  reverse_proxy 127.0.0.1:8001 {
+    header_up X-Forwarded-Proto https
+  }
+}

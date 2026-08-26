@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://idengrid.invalid/protocol/agent-config.schema.json",
+  "title": "IdenGrid Agent Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["central_url", "native_access_token", "store_id", "device_id", "control_socket_path", "control_capability", "local_port"],
+  "properties": {
+    "central_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "native_access_token": {"type": "string", "minLength": 8},
+    "store_id": {"type": "integer", "minimum": 1},
+    "device_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"},
+    "control_socket_path": {"type": "string", "pattern": "^/"},
+    "control_capability": {"type": "string", "minLength": 32},
+    "local_port": {"const": 0}
+  }
+}

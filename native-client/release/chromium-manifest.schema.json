@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pinned IdenGrid Chromium Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "architecture", "revision", "url", "sha256", "archiveRoot", "executable"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "architecture": {"const": "arm64"},
+    "revision": {"type": "string", "minLength": 1},
+    "url": {"type": "string", "pattern": "^https://"},
+    "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+    "archiveRoot": {"type": "string", "minLength": 1},
+    "executable": {"type": "string", "minLength": 1}
+  }
+}

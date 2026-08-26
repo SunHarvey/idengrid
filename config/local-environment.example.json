@@ -1,0 +1,9 @@
+{
+  "environment_id": "example-v1",
+  "timezone": "UTC",
+  "locale": "en-US",
+  "accept_languages": ["en-US", "en"],
+  "expected_egress_ips": ["192.0.2.10"],
+  "geolocation": "block",
+  "quic": "disable"
+}
