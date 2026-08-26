@@ -1,5 +1,6 @@
 import re
 import subprocess
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -306,3 +307,15 @@ def test_viewer_requires_short_lived_ticket_and_session_ownership(system):
     )
     assert accepted.status_code == 200
     assert "httponly" in accepted.headers["set-cookie"].lower()
+
+
+def test_successful_refresh_rotation_is_not_audited_or_labeled() -> None:
+    root = Path(__file__).parents[1]
+    app_source = (root / "cloudbrowser" / "app.py").read_text()
+    admin_page = (root / "cloudbrowser" / "templates" / "index.html").read_text()
+
+    assert "native.refresh_rotated" not in app_source
+    assert "native.refresh_rotated" not in admin_page
+    assert "刷新令牌已轮换" not in admin_page
+    assert "native.refresh_replayed" in app_source
+    assert "native.refresh_replayed" in admin_page

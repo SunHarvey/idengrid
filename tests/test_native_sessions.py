@@ -195,6 +195,11 @@ def test_refresh_rotates_once_and_replay_revokes_device(tmp_path: Path):
         )
         assert client.get("/api/me", headers=bearer(rotated["access_token"])).status_code == 401
 
+    with app.state.db() as db:
+        event_types = [event.event_type for event in db.scalars(select(AuditEvent)).all()]
+        assert "native.refresh_rotated" not in event_types
+        assert event_types.count("native.refresh_replayed") == 1
+
 
 def test_two_concurrent_refreshes_use_database_conditional_update(tmp_path: Path):
     database = tmp_path / "concurrent-refresh.db"

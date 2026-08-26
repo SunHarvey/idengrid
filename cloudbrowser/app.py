@@ -841,7 +841,6 @@ def create_app(
                 )
                 db.commit()
             raise invalid_refresh()
-        audit(db, "native.refresh_rotated", user.id, "device_session", item.id)
         db.commit()
         rotated_item = db.get(DeviceSession, session_id)
         return {
