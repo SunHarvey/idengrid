@@ -467,6 +467,13 @@ def test_windows_ancestor_acl_allows_create_but_rejects_path_replacement():
     assert not _windows_directory_sddl_is_restricted(standard_create)
 
 
+def test_windows_ancestor_acl_accepts_standard_server_2025_sddl():
+    program_data = "O:SYG:SYD:PAI(A;OICIIO;GA;;;CO)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;CI;DCLCRPCR;;;BU)"
+    system_root = "O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:SYD:(A;OICIIO;GA;;;CO)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;CI;LC;;;BU)(A;CIIO;DC;;;BU)(A;;0x1000a1;;;S-1-15-3-65536-1)"
+    assert _windows_ancestor_sddl_is_restricted(program_data)
+    assert _windows_ancestor_sddl_is_restricted(system_root)
+
+
 def test_windows_leaf_acl_hex_masks_require_exact_system_full_and_localservice_read():
     assert _windows_sddl_is_restricted("D:P(A;;0x1f01ff;;;S-1-5-18)(A;;0x120089;;;S-1-5-19)")
     assert not _windows_sddl_is_restricted("D:P(A;;0x1f01ff;;;SY)(A;;0x1200a9;;;LS)")
