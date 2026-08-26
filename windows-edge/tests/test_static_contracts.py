@@ -129,8 +129,7 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("function Expand-VerifiedBundle", install)
         self.assertIn("function Invoke-InstallRollback", install)
         self.assertIn("Remove-NetFirewallRule", install)
-        self.assertIn("$gatewayWrapper uninstall", install)
-        self.assertIn("$edgeWrapper uninstall", install)
+        self.assertIn("$wrapper uninstall", install)
         self.assertIn("$programDataExisted", install)
         self.assertIn("GetFullPath", install)
         self.assertIn("function Expand-VerifiedBundle", upgrade)
@@ -169,7 +168,7 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("Assert-Sha256 $bundle $claimPackageSha256", install)
         self.assertIn("Remove-Variable claimJson", install)
         self.assertIn("throw ('Installation failed: ' + $normalized)", install)
-        self.assertNotIn("$_.Exception.Message", install)
+        self.assertNotIn("throw $_.Exception.Message", install)
         self.assertNotRegex(install, r"(?i)\$env:.*(?:token|secret)|--(?:token|secret|private-key)")
         for phase in ("gateway", "service", "ready"):
             self.assertIn("Report-InstallPhase '" + phase + "'", install)
@@ -276,7 +275,7 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("Wait-PublicHealth $publicHostname", upgrade[upgrade.index("catch {"):])
         self.assertIn("$previousBackup", upgrade)
         self.assertIn("$stateOriginal", upgrade)
-        self.assertIn("WriteAllBytes($statePath,$stateOriginal)", upgrade)
+        self.assertIn("Write-JsonAtomically $statePath $stateRestore", upgrade)
         self.assertIn("function Remove-ManagedJunction", upgrade)
         self.assertIn("[IO.Directory]::Delete", upgrade)
         self.assertIn("icacls.exe $newTarget", upgrade)
@@ -359,6 +358,8 @@ class WindowsEdgeContracts(unittest.TestCase):
             self.assertIn(guard, combined)
 
     def test_scripts_target_windows_powershell_51(self) -> None:
+        static_tests = self.text("tests/Static.Tests.ps1")
+        self.assertIn("Management.Automation.Language.Parser]::ParseFile", static_tests)
         for script in (ROOT / "scripts").glob("*.ps1"):
             text = script.read_text(encoding="utf-8")
             self.assertIn("#requires -Version 5.1", text, script.name)
@@ -369,6 +370,48 @@ class WindowsEdgeContracts(unittest.TestCase):
                 "??",
             ):
                 self.assertNotIn(forbidden, text, script.name)
+
+    def test_remaining_lifecycle_hardening_contracts(self) -> None:
+        install = self.text("scripts/Install-IdenGridEdge.ps1")
+        upgrade = self.text("scripts/Upgrade-IdenGridEdge.ps1")
+        uninstall = self.text("scripts/Uninstall-IdenGridEdge.ps1")
+        build = self.text("scripts/Build-WindowsEdge.ps1")
+
+        for text in (install, upgrade, build):
+            for marker in ("5000", "536870912", "4294967296", "200"):
+                self.assertIn(marker, text)
+            self.assertIn("reserved Windows device name", text)
+            self.assertIn("trailing dot or space", text)
+            self.assertIn("CompressedLength", text)
+        for text in (install, upgrade):
+            self.assertIn("Manifest exceeds package resource limits", text)
+
+        self.assertIn("function Write-ProtectedConfigAtomically", install)
+        self.assertLess(install.index("Protect-ConfigDirectory"), install.index("Write-ProtectedConfigAtomically"))
+        self.assertIn("[IO.File]::Move($temporary,$Destination)", install)
+        self.assertIn("Assert-ServiceAbsent", install)
+        self.assertIn("Rollback requires operator repair", install)
+
+        for text in (install, upgrade):
+            self.assertIn("tamperedMessage", text)
+            self.assertIn("tamperedSignature", text)
+            self.assertIn("nonCanonicalSignature", text)
+
+        self.assertIn("upgrade-journal.json", upgrade)
+        self.assertIn("Recover-UpgradeJournal", upgrade)
+        self.assertIn("Write-JsonAtomically", upgrade)
+        self.assertIn("current.new", upgrade)
+        self.assertIn("current.next", upgrade)
+        for phase in ("phase='prepared'", "phase='switching'", "phase='switched'"):
+            self.assertIn(phase, upgrade)
+        self.assertIn("Upgrade journal and install state are inconsistent", upgrade)
+        self.assertIn("Upgrade recovery found no valid current junction", upgrade)
+        self.assertIn("-not (Test-Path -LiteralPath $journalPath)", upgrade)
+
+        self.assertIn("Assert-NoUnexpectedReparsePoints", uninstall)
+        self.assertIn("@('current','previous')", uninstall)
+        self.assertIn("ProgramData cannot contain reparse points", uninstall)
+        self.assertIn("Assert-ServiceAbsent", uninstall)
 
     def test_examples_have_no_production_values_or_secrets(self) -> None:
         text_suffixes = {".md", ".json", ".ps1", ".xml", ".template"}

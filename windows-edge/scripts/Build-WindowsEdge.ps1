@@ -39,21 +39,45 @@ function Invoke-HttpsDownload([string]$Uri,[string]$Destination) {
         try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
     } finally { $client.Dispose(); $handler.Dispose() }
 }
-function Expand-SafeZip([string]$Archive, [string]$Destination) {
-    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+function Expand-SafeZip([string]$Archive,[string]$Destination) {
+    # Pre-scan the complete central directory before writing extracted bytes.
+    $MaxEntries=5000;$MaxEntryBytes=536870912L;$MaxTotalBytes=4294967296L;$MaxCompressionRatio=200L;$MaxManifestBytes=8388608L
     $root=[IO.Path]::GetFullPath($Destination).TrimEnd('\')+'\'
     $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $approved=New-Object Collections.Generic.List[object]
+    $reserved='^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$';$total=0L
     $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
-    try { foreach($entry in $zip.Entries) {
-        $name=$entry.FullName.Replace('\','/')
-        if ([string]::IsNullOrWhiteSpace($name) -or $name.Contains(':') -or $name.StartsWith('/') -or $name -match '(^|/)(\.|\.\.)(/|$)' -or -not $seen.Add($name.TrimEnd('/'))) { throw 'Runtime ZIP contains an unsafe or duplicate path.' }
-        $target=[IO.Path]::GetFullPath((Join-Path $Destination $name.Replace('/','\')))
-        if (-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime ZIP contains an unsafe path.' }
-        if ([string]::IsNullOrEmpty($entry.Name)) { New-Item -ItemType Directory -Path $target -Force | Out-Null; continue }
-        New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force | Out-Null
-        [IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target,$false)
-    }} finally { $zip.Dispose() }
+    try {
+        if($zip.Entries.Count -gt $MaxEntries){throw 'Runtime ZIP exceeds 5000 entries.'}
+        foreach($entry in $zip.Entries){
+            $name=$entry.FullName.Replace('\','/')
+            if([string]::IsNullOrWhiteSpace($name)-or$name.Contains(':')-or$name.StartsWith('/')-or$name -match '(^|/)(\.|\.\.)(/|$)'){throw 'Runtime ZIP contains an NTFS alternate data stream or unsafe path.'}
+            $parts=@($name.TrimEnd('/').Split('/'))
+            foreach($part in $parts){
+                if($part.EndsWith('.')-or$part.EndsWith(' ')){throw 'Runtime ZIP path has a trailing dot or space.'}
+                if($part -match $reserved){throw 'Runtime ZIP path uses a reserved Windows device name.'}
+            }
+            $identity=($parts|ForEach-Object{$_.Normalize([Text.NormalizationForm]::FormC)})-join'/'
+            if(-not $seen.Add($identity)){throw 'Runtime ZIP contains a duplicate, case, or normalization collision.'}
+            if($entry.Length -gt $MaxEntryBytes){throw 'Runtime ZIP entry exceeds 536870912 bytes.'}
+            $total+=[long]$entry.Length
+            if($total -gt $MaxTotalBytes){throw 'Runtime ZIP exceeds 4294967296 extracted bytes.'}
+            if($entry.Length -gt 0 -and($entry.CompressedLength -le 0 -or[decimal]$entry.Length -gt([decimal]$entry.CompressedLength*$MaxCompressionRatio))){throw 'Runtime ZIP compression ratio exceeds 200.'}
+            if($name.Equals('manifest.json',[StringComparison]::OrdinalIgnoreCase)-and$entry.Length -gt $MaxManifestBytes){throw 'Manifest exceeds package resource limits.'}
+            $target=[IO.Path]::GetFullPath((Join-Path $Destination $name.Replace('/','\')))
+            if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw 'Runtime ZIP contains an unsafe path.'}
+            $approved.Add([pscustomobject]@{Entry=$entry;Target=$target})
+        }
+        New-Item -ItemType Directory -Path $Destination -Force|Out-Null
+        foreach($item in $approved){
+            $entry=$item.Entry;$target=$item.Target
+            if([string]::IsNullOrEmpty($entry.Name)){New-Item -ItemType Directory -Path $target -Force|Out-Null;continue}
+            New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force|Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target,$false)
+        }
+    }finally{$zip.Dispose()}
 }
+
 function Assert-RuntimeManifestSchema($Manifest) {
     $fail='runtime manifest schema validation failed'
     if ($Manifest -isnot [pscustomobject] -or @($Manifest.PSObject.Properties).Count -ne 4 -or $Manifest.schema_version -ne 1 -or $Manifest.platform -ne 'windows' -or $Manifest.architecture -ne 'x86_64' -or $Manifest.artifacts -isnot [array] -or @($Manifest.artifacts).Count -lt 1) { throw $fail }

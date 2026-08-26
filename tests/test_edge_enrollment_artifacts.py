@@ -207,6 +207,28 @@ def test_windows_package_build_rejects_unknown_files_inside_allowed_roots(tmp_pa
         assert result.returncode != 0, relative
 
 
+def test_windows_package_build_rejects_allowlist_prefix_and_dll_probes(tmp_path):
+    script = ROOT / "scripts" / "build_windows_edge_package.py"
+    for relative in (
+        "runtime/Lib/site-packages/aiohttp-3.14.3.dist-infoEVIL/payload.py",
+        "runtime/DLLs/unexpected_payload.pyd",
+        "runtime/Lib/site-packages/aiohttp/unexpected_payload.pyd",
+    ):
+        source = tmp_path / relative.replace("/", "-")
+        (source / "runtime").mkdir(parents=True)
+        (source / "runtime/python.exe").write_bytes(b"runtime")
+        probe = source / relative
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_bytes(b"probe")
+        result = subprocess.run(
+            [str(ROOT / ".venv/bin/python"), str(script), "--source", str(source),
+             "--output", str(tmp_path / f"{source.name}.zip")],
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0, relative
+
+
 def test_formal_windows_builder_uses_shared_validator_and_versioned_artifact_name():
     source = (ROOT / "windows-edge/scripts/Build-WindowsEdge.ps1").read_text()
 

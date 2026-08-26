@@ -35,6 +35,8 @@ ALLOWED_FILES = {
     "templates/Caddyfile.template",
     "templates/edge.json.example",
 }
+# Exact files shipped by the pinned CPython 3.11 embeddable archive.  DLLs is
+# deliberately not a wildcard namespace: every native binary is named here.
 ALLOWED_RUNTIME_ROOTS = {
     "LICENSE.txt",
     "_asyncio.pyd",
@@ -115,7 +117,7 @@ ALLOWED_SITE_PACKAGE_ROOTS = {
     "yarl",
 }
 ALLOWED_SITE_PACKAGE_PREFIXES = (
-    "_cffi_backend.",
+    "_cffi_backend.cp311-win_amd64.pyd",
     "aiohappyeyeballs-2.6.1.dist-info",
     "aiohttp-3.14.3.dist-info",
     "aiosignal-1.4.0.dist-info",
@@ -131,6 +133,19 @@ ALLOWED_SITE_PACKAGE_PREFIXES = (
     "typing_extensions-4.14.1.dist-info",
     "yarl-1.20.1.dist-info",
 )
+ALLOWED_NATIVE_SITE_FILES = {
+    "runtime/Lib/site-packages/_cffi_backend.cp311-win_amd64.pyd",
+    "runtime/Lib/site-packages/aiohttp/_http_parser.cp311-win_amd64.pyd",
+    "runtime/Lib/site-packages/aiohttp/_http_writer.cp311-win_amd64.pyd",
+    "runtime/Lib/site-packages/aiohttp/_websocket/mask.cp311-win_amd64.pyd",
+    "runtime/Lib/site-packages/aiohttp/_websocket/reader_c.cp311-win_amd64.pyd",
+    "runtime/Lib/site-packages/cryptography/hazmat/bindings/_rust.pyd",
+    "runtime/Lib/site-packages/frozenlist/_frozenlist.cp311-win_amd64.pyd",
+    "runtime/Lib/site-packages/multidict/_multidict.cp311-win_amd64.pyd",
+    "runtime/Lib/site-packages/propcache/_helpers_c.cp311-win_amd64.pyd",
+    "runtime/Lib/site-packages/psutil/_psutil_windows.pyd",
+    "runtime/Lib/site-packages/yarl/_quoting_c.cp311-win_amd64.pyd",
+}
 FORBIDDEN_NAMES = {
     ".env",
     "edge.json",
@@ -165,14 +180,16 @@ def _allowed(relative: PurePosixPath) -> bool:
     if len(relative.parts) == 2:
         return relative.name in ALLOWED_RUNTIME_ROOTS
     if relative.parts[1] == "DLLs":
-        return len(relative.parts) == 3 and relative.suffix.lower() in {".dll", ".pyd"}
-    if relative.parts[1:3] != ("Lib", "site-packages"):
+        # The pinned embeddable runtime currently has no DLLs subtree.  Native
+        # additions require an explicit manifest/allowlist update.
+        return False
+    if relative.parts[1:3] != ("Lib", "site-packages") or len(relative.parts) < 4:
         return False
     site_root = relative.parts[3]
-    if site_root not in ALLOWED_SITE_PACKAGE_ROOTS and not site_root.startswith(
-        ALLOWED_SITE_PACKAGE_PREFIXES
-    ):
+    if site_root not in ALLOWED_SITE_PACKAGE_ROOTS and site_root not in ALLOWED_SITE_PACKAGE_PREFIXES:
         return False
+    if relative.suffix.lower() in {".pyd", ".dll"}:
+        return rendered in ALLOWED_NATIVE_SITE_FILES
     return (
         relative.suffix.lower() in ALLOWED_RUNTIME_SUFFIXES
         or relative.name in ALLOWED_RUNTIME_METADATA

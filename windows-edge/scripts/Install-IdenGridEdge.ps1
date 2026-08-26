@@ -70,11 +70,19 @@ function Convert-HexBytes([string]$Hex) {
     return $bytes
 }
 function Assert-Rfc8032Verifier {
-    # RFC 8032 test vector 1 (empty message).
     $pk=Convert-HexBytes 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'
     $sig=Convert-HexBytes 'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b'
-    if (-not (Test-Ed25519Signature (New-Object byte[] 0) $sig $pk)) { throw 'RFC 8032 Ed25519 verifier self-test failed.' }
+    $empty=New-Object byte[] 0
+    if(-not(Test-Ed25519Signature $empty $sig $pk)){throw 'RFC 8032 Ed25519 verifier self-test failed.'}
+    $tamperedMessage=New-Object byte[] 1;$tamperedMessage[0]=1
+    if(Test-Ed25519Signature $tamperedMessage $sig $pk){throw 'Ed25519 verifier accepted a tampered message.'}
+    $tamperedSignature=[byte[]]$sig.Clone();$tamperedSignature[0]=$tamperedSignature[0] -bxor 1
+    if(Test-Ed25519Signature $empty $tamperedSignature $pk){throw 'Ed25519 verifier accepted a tampered signature.'}
+    $nonCanonicalSignature=[byte[]]$sig.Clone()
+    for($i=32;$i -lt 64;$i++){$nonCanonicalSignature[$i]=255}
+    if(Test-Ed25519Signature $empty $nonCanonicalSignature $pk){throw 'Ed25519 verifier accepted non-canonical S.'}
 }
+
 function Read-StrictReleaseManifest([string]$ManifestPath,[string]$SignaturePath) {
     Assert-Rfc8032Verifier
     try { $publicKey = [Convert]::FromBase64String($ReleasePublicKeyBase64); $signature = [Convert]::FromBase64String(([IO.File]::ReadAllText($SignaturePath,[Text.Encoding]::ASCII)).Trim()) } catch { throw 'Release signature encoding is invalid.' }
@@ -147,35 +155,61 @@ function Restore-ProgramDataBackup {
     }
 }
 function Expand-VerifiedBundle([string]$Archive,[string]$Destination) {
-    $root = [IO.Path]::GetFullPath($Destination).TrimEnd('\') + '\'
-    $seen = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    # Pre-scan the complete central directory before writing extracted bytes.
+    $MaxEntries=5000;$MaxEntryBytes=536870912L;$MaxTotalBytes=4294967296L;$MaxCompressionRatio=200L;$MaxManifestBytes=8388608L
+    $root=[IO.Path]::GetFullPath($Destination).TrimEnd('\')+'\'
+    $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $approved=New-Object Collections.Generic.List[object]
+    $reserved='^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$';$total=0L
+    $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
     try {
-        foreach ($entry in $zip.Entries) {
-            $name = $entry.FullName.Replace('\','/')
-            if ([string]::IsNullOrWhiteSpace($name) -or $name.Contains(':') -or $name.StartsWith('/') -or $name -match '(^|/)(\.|\.\.)(/|$)') { throw 'Bundle path contains an NTFS alternate data stream or unsafe path.' }
-            $identity = $name.TrimEnd('/')
-            if (-not $seen.Add($identity)) { throw 'Bundle ZIP contains a duplicate or case-colliding path.' }
-            $target = [IO.Path]::GetFullPath((Join-Path $Destination $entry.FullName.Replace('/','\')))
-            if (-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw 'Bundle ZIP contains an unsafe path.' }
-            if ([string]::IsNullOrEmpty($entry.Name)) { New-Item -ItemType Directory -Path $target -Force | Out-Null; continue }
-            New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force | Out-Null
+        if($zip.Entries.Count -gt $MaxEntries){throw 'Bundle ZIP exceeds 5000 entries.'}
+        foreach($entry in $zip.Entries){
+            $name=$entry.FullName.Replace('\','/')
+            if([string]::IsNullOrWhiteSpace($name)-or$name.Contains(':')-or$name.StartsWith('/')-or$name -match '(^|/)(\.|\.\.)(/|$)'){throw 'Bundle ZIP contains an NTFS alternate data stream or unsafe path.'}
+            $parts=@($name.TrimEnd('/').Split('/'))
+            foreach($part in $parts){
+                if($part.EndsWith('.')-or$part.EndsWith(' ')){throw 'Bundle ZIP path has a trailing dot or space.'}
+                if($part -match $reserved){throw 'Bundle ZIP path uses a reserved Windows device name.'}
+            }
+            $identity=($parts|ForEach-Object{$_.Normalize([Text.NormalizationForm]::FormC)})-join'/'
+            if(-not $seen.Add($identity)){throw 'Bundle ZIP contains a duplicate, case, or normalization collision.'}
+            if($entry.Length -gt $MaxEntryBytes){throw 'Bundle ZIP entry exceeds 536870912 bytes.'}
+            $total+=[long]$entry.Length
+            if($total -gt $MaxTotalBytes){throw 'Bundle ZIP exceeds 4294967296 extracted bytes.'}
+            if($entry.Length -gt 0 -and($entry.CompressedLength -le 0 -or[decimal]$entry.Length -gt([decimal]$entry.CompressedLength*$MaxCompressionRatio))){throw 'Bundle ZIP compression ratio exceeds 200.'}
+            if($name.Equals('manifest.json',[StringComparison]::OrdinalIgnoreCase)-and$entry.Length -gt $MaxManifestBytes){throw 'Manifest exceeds package resource limits.'}
+            $target=[IO.Path]::GetFullPath((Join-Path $Destination $name.Replace('/','\')))
+            if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw 'Bundle ZIP contains an unsafe path.'}
+            $approved.Add([pscustomobject]@{Entry=$entry;Target=$target})
+        }
+        New-Item -ItemType Directory -Path $Destination -Force|Out-Null
+        foreach($item in $approved){
+            $entry=$item.Entry;$target=$item.Target
+            if([string]::IsNullOrEmpty($entry.Name)){New-Item -ItemType Directory -Path $target -Force|Out-Null;continue}
+            New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force|Out-Null
             [IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target,$false)
         }
-    } finally { $zip.Dispose() }
+    }finally{$zip.Dispose()}
 }
+
 function Assert-BundleManifest([string]$Root,[string]$ExpectedVersion) {
     $manifestPath = Join-Path $Root 'manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Bundle manifest is missing.' }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     if ($manifest.schema_version -ne 1 -or $manifest.platform -ne 'windows' -or $manifest.architecture -ne 'x86_64' -or @($manifest.PSObject.Properties).Count -ne 5 -or $manifest.version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$' -or $manifest.files -isnot [array] -or @($manifest.files).Count -lt 1) { throw 'Bundle manifest is unsupported.' }
+    if (@($manifest.files).Count -gt 5000 -or (Get-Item -LiteralPath $manifestPath).Length -gt 8388608) { throw 'Manifest exceeds package resource limits.' }
     if (-not [string]::IsNullOrEmpty($ExpectedVersion) -and $manifest.version -ne $ExpectedVersion) { throw 'Bundle version does not match the requested version.' }
     $listed = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $manifestIdentities=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase);$manifestTotal=0L;$manifestReserved='^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$'
     $required = @('runtime/python.exe','bootstrap/register.py','service/IdenGridEdgeService.exe','service/IdenGridEdgeGateway.exe','service/IdenGridEdgeService.xml','service/IdenGridEdgeGateway.xml','templates/Caddyfile.template')
     foreach ($entry in $manifest.files) {
         if (@($entry.PSObject.Properties).Count -ne 3 -or $entry.path -isnot [string] -or [string]::IsNullOrWhiteSpace($entry.path) -or $entry.path.Equals('manifest.json',[StringComparison]::OrdinalIgnoreCase) -or $entry.path.Contains(':') -or $entry.path.Contains('\') -or $entry.path.StartsWith('/') -or $entry.path -match '(^|/)(\.\.|\.)($|/)' -or [IO.Path]::IsPathRooted($entry.path)) { throw 'Bundle path contains an NTFS alternate data stream or unsafe path.' }
         if (-not $listed.Add($entry.path)) { throw 'Bundle manifest contains a duplicate path.' }
-        if (($entry.size -isnot [long] -and $entry.size -isnot [int]) -or [long]$entry.size -lt 0 -or [long]$entry.size -gt 8589934592) { throw 'Bundle manifest file size is invalid.' }
+        $manifestParts=@($entry.path.Split('/'));foreach($part in $manifestParts){if($part.EndsWith('.')-or$part.EndsWith(' ')){throw 'Bundle manifest path has a trailing dot or space.'};if($part -match $manifestReserved){throw 'Bundle manifest path uses a reserved Windows device name.'}}
+        if(-not $manifestIdentities.Add((($manifestParts|ForEach-Object{$_.Normalize([Text.NormalizationForm]::FormC)})-join'/'))){throw 'Bundle manifest contains a normalization collision.'}
+        if (($entry.size -isnot [long] -and $entry.size -isnot [int]) -or [long]$entry.size -lt 0 -or [long]$entry.size -gt 536870912) { throw 'Bundle manifest file size is invalid.' }
+        $manifestTotal+=[long]$entry.size;if($manifestTotal -gt 4294967296){throw 'Manifest exceeds package resource limits.'}
         if ($entry.sha256 -isnot [string] -or $entry.sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Bundle manifest file SHA256 is malformed.' }
         $path = Join-Path $Root ($entry.path.Replace('/','\'))
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Bundle file is missing.' }
@@ -237,45 +271,68 @@ function Assert-ExactConfigAcl([string]$Path) {
     $local=@($rules | Where-Object { $_.IdentityReference.Value -in @('NT AUTHORITY\LOCAL SERVICE','S-1-5-19') -and $_.AccessControlType -eq 'Allow' -and [int]$_.FileSystemRights -eq 0x00120089 })
     if ($rules.Count -ne 2 -or $system.Count -ne 1 -or $local.Count -ne 1) { throw 'Config DACL verification failed.' }
 }
+function Write-JsonAtomically([string]$Path,$Value) {
+    $temporary=Join-Path ([IO.Path]::GetDirectoryName($Path)) ('.'+[IO.Path]::GetFileName($Path)+'.'+[Guid]::NewGuid().ToString('N')+'.tmp')
+    $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes(($Value|ConvertTo-Json -Depth 6))
+    $stream=New-Object IO.FileStream($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+    try{if(Test-Path -LiteralPath $Path){[IO.File]::Replace($temporary,$Path,$null,$true)}else{[IO.File]::Move($temporary,$Path)}}finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force}}
+}
+function Protect-ConfigDirectory([string]$ConfigDirectory) {
+    foreach($parent in @($idengridDataRoot,$ProgramDataRoot)){
+        Invoke-Icacls -Path $parent -AclArguments @('/setowner','*S-1-5-18')
+        Invoke-Icacls -Path $parent -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
+    }
+    Invoke-Icacls -Path $ConfigDirectory -AclArguments @('/setowner','*S-1-5-18')
+    # Administrators may create/delete names for atomic replacement, but cannot
+    # inherit access to or read Secret files created in this directory.
+    Invoke-Icacls -Path $ConfigDirectory -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)R','*S-1-5-32-544:(WD,AD,DC)')
+}
+function Write-ProtectedConfigAtomically([string]$Destination,[byte[]]$Bytes) {
+    $directory=[IO.Path]::GetDirectoryName($Destination)
+    $temporary=Join-Path $directory ('.edge.json.'+[Guid]::NewGuid().ToString('N')+'.tmp')
+    $stream=New-Object IO.FileStream($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+    try{$stream.Write($Bytes,0,$Bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+    try{
+        Invoke-Icacls -Path $temporary -AclArguments @('/setowner','*S-1-5-18')
+        Invoke-Icacls -Path $temporary -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:F','*S-1-5-19:R')
+        Assert-ExactConfigAcl $temporary
+        if(Test-Path -LiteralPath $Destination){[IO.File]::Replace($temporary,$Destination,$null,$true)}else{[IO.File]::Move($temporary,$Destination)}
+        Assert-ExactConfigAcl $Destination
+    }finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force}}
+}
+function Assert-ServiceAbsent([string]$Name) {
+    if(Get-Service -Name $Name -ErrorAction SilentlyContinue){throw 'Rollback requires operator repair: SCM service still exists.'}
+}
+
 function Invoke-InstallRollback {
-    $previousErrorAction = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        if ($gatewayServiceInstalled -and -not [string]::IsNullOrEmpty($gatewayWrapper)) {
-            & $gatewayWrapper stop 2>$null
-            & $gatewayWrapper uninstall 2>$null
+    $scmSafe=$true
+    foreach($service in @(
+        @{Installed=$gatewayServiceInstalled;Wrapper=$gatewayWrapper;Name='IdenGridEdgeGateway'},
+        @{Installed=$edgeServiceInstalled;Wrapper=$edgeWrapper;Name='IdenGridEdge'})){
+        if($service.Installed -and -not[string]::IsNullOrEmpty([string]$service.Wrapper)){
+            $wrapper=[string]$service.Wrapper
+            & $wrapper stop 2>$null
+            if($LASTEXITCODE -ne 0){$scmSafe=$false;Write-Warning ('Rollback stop failed for '+$service.Name)}
+            & $wrapper uninstall 2>$null
+            if($LASTEXITCODE -ne 0){$scmSafe=$false;Write-Warning ('Rollback uninstall failed for '+$service.Name)}
+            try{Assert-ServiceAbsent $service.Name}catch{$scmSafe=$false;Write-Warning $_.Exception.Message}
         }
-        if ($edgeServiceInstalled -and -not [string]::IsNullOrEmpty($edgeWrapper)) {
-            & $edgeWrapper stop 2>$null
-            & $edgeWrapper uninstall 2>$null
-        }
-        foreach ($rule in $createdFirewallRules) {
-            Remove-NetFirewallRule -Name $rule.name -ErrorAction SilentlyContinue
-        }
-        $current = Join-Path $ProgramRoot 'current'
-        if ($currentJunctionCreated -and (Test-Path -LiteralPath $current)) {
-            Remove-ManagedJunction $current
-        }
-        if (-not [string]::IsNullOrEmpty($versionRoot) -and (Test-Path -LiteralPath $versionRoot)) {
-            Remove-Item -LiteralPath $versionRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if (-not $programDataExisted -and (Test-Path -LiteralPath $ProgramDataRoot)) {
-            Remove-Item -LiteralPath $ProgramDataRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if ($programDataExisted) { Restore-ProgramDataBackup }
-        if (-not $programRootExisted -and (Test-Path -LiteralPath $ProgramRoot)) {
-            Remove-Item -LiteralPath $ProgramRoot -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if (-not $idengridDataRootExisted -and (Test-Path -LiteralPath $idengridDataRoot)) {
-            $remaining = @(Get-ChildItem -LiteralPath $idengridDataRoot -Force -ErrorAction SilentlyContinue)
-            if ($remaining.Count -eq 0) {
-                Remove-Item -LiteralPath $idengridDataRoot -Force -ErrorAction SilentlyContinue
-            }
-        }
-    } finally {
-        $ErrorActionPreference = $previousErrorAction
+    }
+    if(-not $scmSafe){throw 'Rollback requires operator repair; ProgramRoot and version binaries were retained.'}
+    foreach($rule in $createdFirewallRules){Remove-NetFirewallRule -Name $rule.name -ErrorAction SilentlyContinue}
+    $current=Join-Path $ProgramRoot 'current'
+    if($currentJunctionCreated -and(Test-Path -LiteralPath $current)){Remove-ManagedJunction $current}
+    if(-not[string]::IsNullOrEmpty($versionRoot)-and(Test-Path -LiteralPath $versionRoot)){Remove-Item -LiteralPath $versionRoot -Recurse -Force}
+    if(-not $programDataExisted -and(Test-Path -LiteralPath $ProgramDataRoot)){Remove-Item -LiteralPath $ProgramDataRoot -Recurse -Force}
+    if($programDataExisted){Restore-ProgramDataBackup}
+    if(-not $programRootExisted -and(Test-Path -LiteralPath $ProgramRoot)){Remove-Item -LiteralPath $ProgramRoot -Recurse -Force}
+    if(-not $idengridDataRootExisted -and(Test-Path -LiteralPath $idengridDataRoot)){
+        $remaining=@(Get-ChildItem -LiteralPath $idengridDataRoot -Force -ErrorAction SilentlyContinue)
+        if($remaining.Count -eq 0){Remove-Item -LiteralPath $idengridDataRoot -Force}
     }
 }
+
 function Wait-EdgeHealth {
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     do {
@@ -381,6 +438,7 @@ try {
     }
     Invoke-Icacls -Path (Join-Path $ProgramDataRoot '*') -AclArguments @('/reset','/T','/C')
     $configTarget = Join-Path $ProgramDataRoot 'config\edge.json'
+    Protect-ConfigDirectory (Join-Path $ProgramDataRoot 'config')
     Invoke-Icacls -Path $ProgramRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
     Invoke-Icacls -Path $versionRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
     Invoke-Icacls -Path (Join-Path $versionRoot '*') -AclArguments @('/reset','/T','/C')
@@ -393,21 +451,14 @@ try {
             ticket_max_ttl=[int]$claim.resources.ticket_max_ttl
         }
         $edgeConfigJson = $edgeConfig | ConvertTo-Json -Compress
-        [IO.File]::WriteAllText($configTarget,$edgeConfigJson,(New-Object Text.UTF8Encoding($false)))
-        Invoke-Icacls -Path $configTarget -AclArguments @('/setowner','*S-1-5-18')
-        Invoke-Icacls -Path $configTarget -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:F','*S-1-5-19:R')
-        Assert-ExactConfigAcl $configTarget
+        Write-ProtectedConfigAtomically $configTarget ((New-Object Text.UTF8Encoding($false)).GetBytes($edgeConfigJson))
         Remove-Variable claimJson -ErrorAction SilentlyContinue
         Remove-Variable claim -ErrorAction SilentlyContinue
         Remove-Variable edgeConfig -ErrorAction SilentlyContinue
         Remove-Variable edgeConfigJson -ErrorAction SilentlyContinue
     } else {
-        Copy-Item -LiteralPath $ProtectedConfigPath -Destination $configTarget -Force
-        Invoke-Icacls -Path $configTarget -AclArguments @('/setowner','*S-1-5-18')
-        Invoke-Icacls -Path $configTarget -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:F','*S-1-5-19:R')
-        Assert-ExactConfigAcl $configTarget
+        Write-ProtectedConfigAtomically $configTarget ([IO.File]::ReadAllBytes($ProtectedConfigPath))
     }
-    Invoke-Icacls -Path (Join-Path $ProgramDataRoot 'config') -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)R')
     $currentPhase = 'configuring'
     Report-InstallPhase 'configuring'
     $caddyText = (Get-Content -LiteralPath (Join-Path $versionRoot 'templates\Caddyfile.template') -Raw).Replace('{{EDGE_HOSTNAME}}',$Hostname.ToLowerInvariant())
@@ -437,7 +488,8 @@ try {
     Invoke-WinSW $gatewayWrapper 'start' 'IdenGridEdgeGateway'
     Wait-PublicHealth $Hostname
     Report-InstallPhase 'gateway'
-    [pscustomobject][ordered]@{schema_version=1;version=$Version;hostname=$Hostname.ToLowerInvariant();installed_at=[DateTime]::UtcNow.ToString('o');firewall_rules=@($createdFirewallRules)} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $ProgramDataRoot 'state\install-state.json') -Encoding UTF8
+    $installState=[pscustomobject][ordered]@{schema_version=1;version=$Version;hostname=$Hostname.ToLowerInvariant();installed_at=[DateTime]::UtcNow.ToString('o');firewall_rules=@($createdFirewallRules)}
+    Write-JsonAtomically (Join-Path $ProgramDataRoot 'state\install-state.json') $installState
     $currentPhase = 'ready'
     Report-InstallPhase 'ready'
     Write-Output "IdenGrid Edge $Version installed."

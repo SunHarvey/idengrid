@@ -49,11 +49,19 @@ function Convert-HexBytes([string]$Hex) {
     return $bytes
 }
 function Assert-Rfc8032Verifier {
-    # RFC 8032 test vector 1 (empty message).
     $pk=Convert-HexBytes 'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'
     $sig=Convert-HexBytes 'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b'
-    if (-not (Test-Ed25519Signature (New-Object byte[] 0) $sig $pk)) { throw 'RFC 8032 Ed25519 verifier self-test failed.' }
+    $empty=New-Object byte[] 0
+    if(-not(Test-Ed25519Signature $empty $sig $pk)){throw 'RFC 8032 Ed25519 verifier self-test failed.'}
+    $tamperedMessage=New-Object byte[] 1;$tamperedMessage[0]=1
+    if(Test-Ed25519Signature $tamperedMessage $sig $pk){throw 'Ed25519 verifier accepted a tampered message.'}
+    $tamperedSignature=[byte[]]$sig.Clone();$tamperedSignature[0]=$tamperedSignature[0] -bxor 1
+    if(Test-Ed25519Signature $empty $tamperedSignature $pk){throw 'Ed25519 verifier accepted a tampered signature.'}
+    $nonCanonicalSignature=[byte[]]$sig.Clone()
+    for($i=32;$i -lt 64;$i++){$nonCanonicalSignature[$i]=255}
+    if(Test-Ed25519Signature $empty $nonCanonicalSignature $pk){throw 'Ed25519 verifier accepted non-canonical S.'}
 }
+
 function Read-StrictReleaseManifest([string]$ManifestPath,[string]$SignaturePath) {
     Assert-Rfc8032Verifier
     try { $publicKey = [Convert]::FromBase64String($ReleasePublicKeyBase64); $signature = [Convert]::FromBase64String(([IO.File]::ReadAllText($SignaturePath,[Text.Encoding]::ASCII)).Trim()) } catch { throw 'Release signature encoding is invalid.' }
@@ -111,35 +119,61 @@ function Remove-ManagedJunction([string]$Path) {
     if(Test-Path -LiteralPath $Path){throw 'Managed junction removal failed.'}
 }
 function Expand-VerifiedBundle([string]$Archive,[string]$Destination) {
-    $root = [IO.Path]::GetFullPath($Destination).TrimEnd('\') + '\'
-    $seen = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    # Pre-scan the complete central directory before writing extracted bytes.
+    $MaxEntries=5000;$MaxEntryBytes=536870912L;$MaxTotalBytes=4294967296L;$MaxCompressionRatio=200L;$MaxManifestBytes=8388608L
+    $root=[IO.Path]::GetFullPath($Destination).TrimEnd('\')+'\'
+    $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $approved=New-Object Collections.Generic.List[object]
+    $reserved='^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$';$total=0L
+    $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
     try {
-        foreach ($entry in $zip.Entries) {
-            $name = $entry.FullName.Replace('\','/')
-            if ([string]::IsNullOrWhiteSpace($name) -or $name.Contains(':') -or $name.StartsWith('/') -or $name -match '(^|/)(\.|\.\.)(/|$)') { throw 'Bundle path contains an NTFS alternate data stream or unsafe path.' }
-            $identity = $name.TrimEnd('/')
-            if (-not $seen.Add($identity)) { throw 'Bundle ZIP contains a duplicate or case-colliding path.' }
-            $target = [IO.Path]::GetFullPath((Join-Path $Destination $entry.FullName.Replace('/','\')))
-            if (-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { throw 'Bundle ZIP contains an unsafe path.' }
-            if ([string]::IsNullOrEmpty($entry.Name)) { New-Item -ItemType Directory -Path $target -Force | Out-Null; continue }
-            New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force | Out-Null
+        if($zip.Entries.Count -gt $MaxEntries){throw 'Bundle ZIP exceeds 5000 entries.'}
+        foreach($entry in $zip.Entries){
+            $name=$entry.FullName.Replace('\','/')
+            if([string]::IsNullOrWhiteSpace($name)-or$name.Contains(':')-or$name.StartsWith('/')-or$name -match '(^|/)(\.|\.\.)(/|$)'){throw 'Bundle ZIP contains an NTFS alternate data stream or unsafe path.'}
+            $parts=@($name.TrimEnd('/').Split('/'))
+            foreach($part in $parts){
+                if($part.EndsWith('.')-or$part.EndsWith(' ')){throw 'Bundle ZIP path has a trailing dot or space.'}
+                if($part -match $reserved){throw 'Bundle ZIP path uses a reserved Windows device name.'}
+            }
+            $identity=($parts|ForEach-Object{$_.Normalize([Text.NormalizationForm]::FormC)})-join'/'
+            if(-not $seen.Add($identity)){throw 'Bundle ZIP contains a duplicate, case, or normalization collision.'}
+            if($entry.Length -gt $MaxEntryBytes){throw 'Bundle ZIP entry exceeds 536870912 bytes.'}
+            $total+=[long]$entry.Length
+            if($total -gt $MaxTotalBytes){throw 'Bundle ZIP exceeds 4294967296 extracted bytes.'}
+            if($entry.Length -gt 0 -and($entry.CompressedLength -le 0 -or[decimal]$entry.Length -gt([decimal]$entry.CompressedLength*$MaxCompressionRatio))){throw 'Bundle ZIP compression ratio exceeds 200.'}
+            if($name.Equals('manifest.json',[StringComparison]::OrdinalIgnoreCase)-and$entry.Length -gt $MaxManifestBytes){throw 'Manifest exceeds package resource limits.'}
+            $target=[IO.Path]::GetFullPath((Join-Path $Destination $name.Replace('/','\')))
+            if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw 'Bundle ZIP contains an unsafe path.'}
+            $approved.Add([pscustomobject]@{Entry=$entry;Target=$target})
+        }
+        New-Item -ItemType Directory -Path $Destination -Force|Out-Null
+        foreach($item in $approved){
+            $entry=$item.Entry;$target=$item.Target
+            if([string]::IsNullOrEmpty($entry.Name)){New-Item -ItemType Directory -Path $target -Force|Out-Null;continue}
+            New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force|Out-Null
             [IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target,$false)
         }
-    } finally { $zip.Dispose() }
+    }finally{$zip.Dispose()}
 }
+
 function Assert-BundleManifest([string]$Root,[string]$ExpectedVersion) {
     $manifestPath = Join-Path $Root 'manifest.json'
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Bundle manifest is missing.' }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     if ($manifest.schema_version -ne 1 -or $manifest.platform -ne 'windows' -or $manifest.architecture -ne 'x86_64' -or @($manifest.PSObject.Properties).Count -ne 5 -or $manifest.version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$' -or $manifest.files -isnot [array] -or @($manifest.files).Count -lt 1) { throw 'Bundle manifest is unsupported.' }
+    if (@($manifest.files).Count -gt 5000 -or (Get-Item -LiteralPath $manifestPath).Length -gt 8388608) { throw 'Manifest exceeds package resource limits.' }
     if (-not [string]::IsNullOrEmpty($ExpectedVersion) -and $manifest.version -ne $ExpectedVersion) { throw 'Bundle version does not match the requested version.' }
     $listed = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $manifestIdentities=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase);$manifestTotal=0L;$manifestReserved='^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$'
     $required = @('runtime/python.exe','bootstrap/register.py','service/IdenGridEdgeService.exe','service/IdenGridEdgeGateway.exe','service/IdenGridEdgeService.xml','service/IdenGridEdgeGateway.xml','templates/Caddyfile.template')
     foreach ($entry in $manifest.files) {
         if (@($entry.PSObject.Properties).Count -ne 3 -or $entry.path -isnot [string] -or [string]::IsNullOrWhiteSpace($entry.path) -or $entry.path.Equals('manifest.json',[StringComparison]::OrdinalIgnoreCase) -or $entry.path.Contains(':') -or $entry.path.Contains('\') -or $entry.path.StartsWith('/') -or $entry.path -match '(^|/)(\.\.|\.)($|/)' -or [IO.Path]::IsPathRooted($entry.path)) { throw 'Bundle path contains an NTFS alternate data stream or unsafe path.' }
         if (-not $listed.Add($entry.path)) { throw 'Bundle manifest contains a duplicate path.' }
-        if (($entry.size -isnot [long] -and $entry.size -isnot [int]) -or [long]$entry.size -lt 0 -or [long]$entry.size -gt 8589934592) { throw 'Bundle manifest file size is invalid.' }
+        $manifestParts=@($entry.path.Split('/'));foreach($part in $manifestParts){if($part.EndsWith('.')-or$part.EndsWith(' ')){throw 'Bundle manifest path has a trailing dot or space.'};if($part -match $manifestReserved){throw 'Bundle manifest path uses a reserved Windows device name.'}}
+        if(-not $manifestIdentities.Add((($manifestParts|ForEach-Object{$_.Normalize([Text.NormalizationForm]::FormC)})-join'/'))){throw 'Bundle manifest contains a normalization collision.'}
+        if (($entry.size -isnot [long] -and $entry.size -isnot [int]) -or [long]$entry.size -lt 0 -or [long]$entry.size -gt 536870912) { throw 'Bundle manifest file size is invalid.' }
+        $manifestTotal+=[long]$entry.size;if($manifestTotal -gt 4294967296){throw 'Manifest exceeds package resource limits.'}
         if ($entry.sha256 -isnot [string] -or $entry.sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Bundle manifest file SHA256 is malformed.' }
         $path = Join-Path $Root ($entry.path.Replace('/','\'))
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Bundle file is missing.' }
@@ -153,6 +187,48 @@ function Assert-BundleManifest([string]$Root,[string]$ExpectedVersion) {
     }
     return $manifest
 }
+function Write-JsonAtomically([string]$Path,$Value) {
+    $temporary=Join-Path ([IO.Path]::GetDirectoryName($Path)) ('.'+[IO.Path]::GetFileName($Path)+'.'+[Guid]::NewGuid().ToString('N')+'.tmp')
+    $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes(($Value|ConvertTo-Json -Depth 6))
+    $stream=New-Object IO.FileStream($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+    try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+    try{if(Test-Path -LiteralPath $Path){[IO.File]::Replace($temporary,$Path,$null,$true)}else{[IO.File]::Move($temporary,$Path)}}finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force}}
+}
+function Recover-UpgradeJournal([string]$JournalPath,[string]$StatePath) {
+    $current=Join-Path $ProgramRoot 'current';$previous=Join-Path $ProgramRoot 'previous';$newLink=Join-Path $ProgramRoot 'current.new';$legacyNext=Join-Path $ProgramRoot 'current.next'
+    if(Test-Path -LiteralPath $legacyNext){Remove-ManagedJunction $legacyNext}
+    if(-not(Test-Path -LiteralPath $JournalPath)){if(Test-Path -LiteralPath $newLink){throw 'Unjournaled current.new requires operator repair.'};return}
+    if((Get-Item -LiteralPath $JournalPath).Length -gt 16384){throw 'Upgrade journal is invalid.'}
+    $journal=Get-Content -LiteralPath $JournalPath -Raw|ConvertFrom-Json
+    if(@($journal.PSObject.Properties).Count -ne 4 -or $journal.schema_version -ne 1 -or $journal.phase -notin @('prepared','switching','switched') -or $journal.old_version -notmatch '^\d+\.\d+\.\d+' -or $journal.new_version -notmatch '^\d+\.\d+\.\d+') {throw 'Upgrade journal is invalid.'}
+    $state=Get-Content -LiteralPath $StatePath -Raw|ConvertFrom-Json
+    if([string]$state.version -eq [string]$journal.new_version){
+        Assert-ManagedVersionJunction $current ([string]$journal.new_version)|Out-Null
+        if(Test-Path -LiteralPath $newLink){Remove-ManagedJunction $newLink}
+        $previousBackup=Join-Path $ProgramRoot 'previous.backup'
+        if(Test-Path -LiteralPath $previousBackup){Assert-ManagedVersionJunction $previousBackup $null|Out-Null;Remove-ManagedJunction $previousBackup}
+        Remove-Item -LiteralPath $JournalPath -Force
+        return
+    }
+    if([string]$state.version -ne [string]$journal.old_version){throw 'Upgrade journal and install state are inconsistent.'}
+    if(Test-Path -LiteralPath $current){
+        try{$active=Assert-ManagedVersionJunction $current ([string]$journal.old_version)}catch{
+            Assert-ManagedVersionJunction $current ([string]$journal.new_version)|Out-Null
+            if(-not(Test-Path -LiteralPath $previous)){throw 'Upgrade recovery cannot restore current.'}
+            Assert-ManagedVersionJunction $previous ([string]$journal.old_version)|Out-Null
+            Remove-ManagedJunction $current;Rename-Item -LiteralPath $previous -NewName 'current'
+        }
+    }elseif(Test-Path -LiteralPath $previous){
+        Assert-ManagedVersionJunction $previous ([string]$journal.old_version)|Out-Null
+        Rename-Item -LiteralPath $previous -NewName 'current'
+    }else{throw 'Upgrade recovery found no valid current junction.'}
+    if(Test-Path -LiteralPath $newLink){Remove-ManagedJunction $newLink}
+    Assert-ManagedVersionJunction $current ([string]$journal.old_version)|Out-Null
+    $previousBackup=Join-Path $ProgramRoot 'previous.backup'
+    if(-not(Test-Path -LiteralPath $previous)-and(Test-Path -LiteralPath $previousBackup)){Assert-ManagedVersionJunction $previousBackup $null|Out-Null;Rename-Item -LiteralPath $previousBackup -NewName 'previous'}
+    Remove-Item -LiteralPath $JournalPath -Force
+}
+
 function Invoke-ServiceAction([string]$Wrapper,[string]$Action,[bool]$Required=$true) {
     & $Wrapper $Action
     if ($Required -and $LASTEXITCODE -ne 0) { throw "Service action failed: $Action" }
@@ -176,8 +252,10 @@ function Wait-PublicHealth([string]$HostName) {
 Assert-Administrator
 $current=Join-Path $ProgramRoot 'current'
 $statePath=Join-Path $ProgramDataRoot 'state\install-state.json'
+$journalPath=Join-Path $ProgramDataRoot 'state\upgrade-journal.json'
 if(-not(Test-Path -LiteralPath $statePath -PathType Leaf)){throw 'Install state is missing.'}
-$stateOriginal=[IO.File]::ReadAllBytes($statePath);$state=Get-Content -LiteralPath $statePath -Raw|ConvertFrom-Json
+Recover-UpgradeJournal $journalPath $statePath
+$stateOriginal=[IO.File]::ReadAllBytes($statePath);$state=Get-Content -LiteralPath $statePath -Raw|ConvertFrom-Json;$stateOriginalObject=$state
 $currentVersion=[string]$state.version;$publicHostname=[string]$state.hostname
 if($currentVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$' -or [string]::IsNullOrWhiteSpace($publicHostname)){throw 'Install state is invalid.'}
 $oldTarget=Assert-ManagedVersionJunction $current $currentVersion
@@ -215,16 +293,20 @@ try {
     $edgeWrapper=Join-Path $oldTarget 'service\IdenGridEdgeService.exe';$gatewayWrapper=Join-Path $oldTarget 'service\IdenGridEdgeGateway.exe'
     Invoke-ServiceAction $gatewayWrapper 'stop'
     Invoke-ServiceAction $edgeWrapper 'stop'
-    $nextJunction = Join-Path $ProgramRoot 'current.next'
+    $nextJunction = Join-Path $ProgramRoot 'current.new'
     $previous = Join-Path $ProgramRoot 'previous'
     if (Test-Path -LiteralPath $nextJunction) { Remove-ManagedJunction $nextJunction }
     if (Test-Path -LiteralPath $previousBackup) { throw 'Stale previous backup requires operator attention.' }
+    Write-JsonAtomically $journalPath ([pscustomobject][ordered]@{schema_version=1;phase='prepared';old_version=$currentVersion;new_version=$Version})
     if (Test-Path -LiteralPath $previous) { Assert-ManagedVersionJunction $previous $null | Out-Null; Rename-Item -LiteralPath $previous -NewName 'previous.backup' }
     New-Item -ItemType Junction -Path $nextJunction -Target $newTarget | Out-Null
+    Write-JsonAtomically $journalPath ([pscustomobject][ordered]@{schema_version=1;phase='switching';old_version=$currentVersion;new_version=$Version})
+    # Directory junction replacement is not atomic on Windows; the durable journal makes the tiny rename gap recoverable and fail closed.
     Rename-Item -LiteralPath $current -NewName 'previous'
     $oldMoved = $true
     Rename-Item -LiteralPath $nextJunction -NewName 'current'
     $switched = $true
+    Write-JsonAtomically $journalPath ([pscustomobject][ordered]@{schema_version=1;phase='switched';old_version=$currentVersion;new_version=$Version})
 
     $activeTarget=Assert-ManagedVersionJunction $current $Version
     $edgeWrapper=Join-Path $activeTarget 'service\IdenGridEdgeService.exe'
@@ -236,8 +318,9 @@ try {
     $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { New-Object psobject }
     $state | Add-Member -NotePropertyName version -NotePropertyValue $Version -Force
     $state | Add-Member -NotePropertyName upgraded_at -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
-    $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Write-JsonAtomically $statePath $state
     if (Test-Path -LiteralPath $previousBackup) { Remove-ManagedJunction $previousBackup }
+    if(Test-Path -LiteralPath $journalPath){Remove-Item -LiteralPath $journalPath -Force}
     $upgradeSucceeded=$true
     Write-Output "IdenGrid Edge upgraded to $Version."
 } catch {
@@ -270,10 +353,14 @@ try {
         try { $restoredTarget=Assert-ManagedVersionJunction $current $currentVersion; $edgeWrapper=Join-Path $restoredTarget 'service\IdenGridEdgeService.exe'; $gatewayWrapper=Join-Path $restoredTarget 'service\IdenGridEdgeGateway.exe'; Invoke-ServiceAction $edgeWrapper 'start' $false; Wait-EdgeHealth; Invoke-ServiceAction $gatewayWrapper 'start' $false; Wait-PublicHealth $publicHostname } catch { Write-Warning 'Pre-switch service recovery requires operator attention.' }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $ProgramRoot 'previous')) -and (Test-Path -LiteralPath $previousBackup)) { Rename-Item -LiteralPath $previousBackup -NewName 'previous' }
-    [IO.File]::WriteAllBytes($statePath,$stateOriginal)
+    $stateRestore=$stateOriginalObject
+    Write-JsonAtomically $statePath $stateRestore
+    try{Assert-ManagedVersionJunction $current $currentVersion|Out-Null;if(Test-Path -LiteralPath $journalPath){Remove-Item -LiteralPath $journalPath -Force}}catch{Write-Warning 'Upgrade journal retained for entry recovery.'}
     Write-Error ('Upgrade failed; rollback attempted: ' + $failure)
     throw
 } finally {
-    if (-not $upgradeSucceeded -and -not [string]::IsNullOrEmpty($newTarget) -and (Test-Path -LiteralPath $newTarget)) { Remove-Item -LiteralPath $newTarget -Recurse -Force }
+    foreach($stale in @((Join-Path $ProgramRoot 'current.next'))){if(Test-Path -LiteralPath $stale){Remove-ManagedJunction $stale}}
+    if(-not(Test-Path -LiteralPath $journalPath)){ $currentNew=Join-Path $ProgramRoot 'current.new';if(Test-Path -LiteralPath $currentNew){Remove-ManagedJunction $currentNew} }
+    if (-not $upgradeSucceeded -and -not (Test-Path -LiteralPath $journalPath) -and -not [string]::IsNullOrEmpty($newTarget) -and (Test-Path -LiteralPath $newTarget)) { Remove-Item -LiteralPath $newTarget -Recurse -Force }
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
 }

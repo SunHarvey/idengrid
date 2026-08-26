@@ -50,12 +50,19 @@ Assert-True ($upgrade -match "ParameterSetName='Server'" -and $upgrade -match 'R
 $uninstall = Read-Utf8 'scripts\Uninstall-IdenGridEdge.ps1'
 Assert-True ($uninstall -match '\[switch\]\$PurgeData' -and $uninstall -match 'ShouldProcess') 'ProgramData purge must be explicit and confirmed.'
 Assert-True ($uninstall -match 'Assert-AllowedRoot' -and $uninstall -match 'Assert-FirewallRuleMatchesState' -and ([regex]::Matches($uninstall,'ShouldProcess\(').Count -eq 1)) 'Uninstall must use fixed roots, recorded firewall identity, and one transaction confirmation.'
+Assert-True ($uninstall -match 'Assert-NoUnexpectedReparsePoints' -and $uninstall -match 'Assert-ServiceAbsent') 'Uninstall must reject unmanaged reparse points and verify SCM deletion.'
 $build = Read-Utf8 'scripts\Build-WindowsEdge.ps1'
 Assert-True ($build -match 'Assert-RuntimeManifestSchema' -and $build -match 'ApprovedRuntimeManifestSha256' -and $build -match 'Expand-SafeZip') 'Build must enforce schema, allowlist, and safe ZIP extraction.'
+foreach($source in @($install,$upgrade,$build)){Assert-True ($source -match '536870912' -and $source -match '4294967296' -and $source -match 'CompressedLength' -and $source -match 'reserved Windows device name') 'Every ZIP extraction path must pre-scan resource and Windows namespace limits.'}
+Assert-True ($install -match 'Write-ProtectedConfigAtomically' -and $install -match 'Protect-ConfigDirectory' -and $install -match 'Assert-ServiceAbsent') 'Install must protect Secrets before creation and fail closed on SCM rollback.'
+Assert-True ($upgrade -match 'upgrade-journal\.json' -and $upgrade -match 'Recover-UpgradeJournal' -and $upgrade -match 'Write-JsonAtomically') 'Upgrade must journal and atomically commit state.'
 foreach ($script in Get-ChildItem -LiteralPath (Join-Path $Root 'scripts') -Filter '*.ps1') {
     $text = [IO.File]::ReadAllText($script.FullName)
     Assert-True ($text -match '#requires -Version 5\.1') "$($script.Name) must target Windows PowerShell 5.1."
     Assert-True ($text -notmatch 'ForEach-Object -Parallel|ConvertFrom-Json -AsHashtable|Invoke-Expression') "$($script.Name) uses a forbidden PowerShell feature."
+    $tokens=$null;$parseErrors=$null
+    [Management.Automation.Language.Parser]::ParseFile($script.FullName,[ref]$tokens,[ref]$parseErrors)|Out-Null
+    Assert-True (@($parseErrors).Count -eq 0) "$($script.Name) does not parse under Windows PowerShell 5.1."
 }
 if ($failures.Count -gt 0) { $failures | ForEach-Object { Write-Error $_ }; throw "$($failures.Count) static contract test(s) failed." }
 Write-Output 'All Windows Edge static contracts passed.'
