@@ -1,6 +1,6 @@
 # IdenGrid Edge for Windows Server 2025 (x64)
 
-This directory is the packaging and lifecycle framework for a **headless, self-contained** Windows Edge. It adds no GUI and does not modify `edge-tunnel` or `cloudbrowser`.
+This directory contains the packaging and lifecycle framework for a **headless, self-contained** Windows Edge. It integrates with the cross-platform `edge-tunnel` core and the control-plane enrollment routes in this repository.
 
 ## Security and operating model
 
@@ -48,9 +48,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows-edge\scripts\B
 The builder verifies every download, expands wheels without pip, configures the embeddable runtime path, runs isolated import/CLI checks, emits a per-file `manifest.json`, and creates:
 
 ```text
-windows-edge\dist\IdenGrid-Edge-Windows-Server-2025-x64.zip
-windows-edge\dist\IdenGrid-Edge-Windows-Server-2025-x64.zip.sha256
+windows-edge\dist\IdenGrid-Edge-Windows-Server-2025-x64-vX.Y.Z.zip
 ```
+
+The release operator then creates the signed `release-manifest.json` and detached `release-manifest.json.sig`; these three files form the formal release set.
 
 The ZIP writer sorts paths and fixes entry timestamps for reproducibility. Build twice from the same clean commit and compare SHA-256 values.
 
@@ -66,7 +67,7 @@ python windows-edge\tools\sign_release_manifest.py `
 
 Never commit the private-key file. Keep it outside the repository with restrictive ACLs and use an isolated signing runner. The installer, upgrader, and control plane embed the same production Ed25519 public key; release manifests are verified before package selection or enrollment claim consumption.
 
-> Integration prerequisite: the packaged `edge_tunnel` CLI must implement the planned Windows `--config` protected-file entry point before service runtime acceptance. This branch intentionally does not alter the core.
+> Runtime acceptance prerequisite: build and execute the packaged `edge_tunnel --config` path on a clean Windows Server 2025 x64 host, including real ACL, SCM, firewall, TLS/WSS, reboot, and rollback checks.
 
 ## Provision config without exposing the secret
 
