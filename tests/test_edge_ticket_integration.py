@@ -44,6 +44,36 @@ def test_central_ticket_is_accepted_by_edge_verifier() -> None:
     assert ticket.expires_at - ticket.issued_at == 60
 
 
+def test_ticket_wire_contract_and_lease_lifecycle_remain_unchanged(system) -> None:
+    client, _ = system
+    token = _login(client, "admin", "Admin-password-123")
+    store = client.get("/api/stores", headers=_auth(token)).json()[0]
+
+    connected = client.post(f"/api/stores/{store['id']}/connect", headers=_auth(token))
+    ticket = client.post(
+        f"/api/stores/{store['id']}/tickets",
+        headers=_auth(token),
+        json={"host": "8.8.8.8", "port": 443},
+    )
+    disconnected = client.post(
+        f"/api/stores/{store['id']}/disconnect", headers=_auth(token)
+    )
+
+    assert connected.status_code == 201
+    assert connected.json()["status"] == "active"
+    assert connected.json()["expires_in"] == 8 * 60 * 60
+    assert ticket.status_code == 201
+    assert set(ticket.json()) == {
+        "ticket",
+        "expires_in",
+        "edge_endpoint",
+        "lease_id",
+    }
+    assert ticket.json()["expires_in"] <= 60
+    assert disconnected.status_code == 200
+    assert disconnected.json()["status"] == "disconnected"
+
+
 def test_edge_replay_cache_rejects_second_use_of_central_ticket() -> None:
     now = 1_000
     secret = "central-and-edge-share-this-node-secret"

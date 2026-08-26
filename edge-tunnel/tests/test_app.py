@@ -8,7 +8,8 @@ import time
 import pytest
 from aiohttp import ClientResponseError, WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
-from edge_tunnel.app import CachedPublicIPv4, LinuxResourceProvider, Settings, create_app
+from edge_tunnel.app import RESOURCE_PROVIDER, CachedPublicIPv4, Settings, create_app
+from edge_tunnel.resources import LinuxResourceProvider, WindowsResourceProvider
 from edge_tunnel.targets import ResolvedTarget
 
 
@@ -51,7 +52,7 @@ class Policy:
 @pytest.mark.asyncio
 async def test_public_ipv4_is_cached_for_a_short_ttl_and_refresh_failure_is_not_stale():
     now = 100.0
-    answers = iter(["198.51.100.20", OSError("lookup unavailable")])
+    answers = iter(["8.8.8.8", OSError("lookup unavailable")])
     calls = 0
 
     async def fetch():
@@ -64,8 +65,8 @@ async def test_public_ipv4_is_cached_for_a_short_ttl_and_refresh_failure_is_not_
 
     provider = CachedPublicIPv4(fetch, ttl_seconds=60, clock=lambda: now)
 
-    assert await provider() == "198.51.100.20"
-    assert await provider() == "198.51.100.20"
+    assert await provider() == "8.8.8.8"
+    assert await provider() == "8.8.8.8"
     assert calls == 1
     now = 161.0
     with pytest.raises(OSError, match="lookup unavailable"):
@@ -124,6 +125,15 @@ def settings():
     )
 
 
+def test_create_app_automatically_selects_platform_resource_provider(settings, monkeypatch):
+    selected = WindowsResourceProvider(psutil_module=object())
+    monkeypatch.setattr("edge_tunnel.app.create_resource_provider", lambda: selected)
+
+    app = create_app(settings)
+
+    assert app[RESOURCE_PROVIDER] is selected
+
+
 @pytest.mark.asyncio
 async def test_health_and_status_expose_only_nonsecret_operational_data(settings):
     async def public_ipv4():
@@ -172,6 +182,27 @@ async def test_status_fails_when_public_ipv4_refresh_fails(settings):
         settings,
         public_ipv4_provider=failed_lookup,
         resource_provider=dict,
+    )
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get("/status")
+        body = await response.text()
+
+    assert response.status == 503
+    assert body == "status unavailable"
+
+
+@pytest.mark.asyncio
+async def test_status_fails_closed_when_resource_collection_fails(settings):
+    async def public_ipv4():
+        return "198.51.100.20"
+
+    def failed_resources():
+        raise OSError("sensitive local detail")
+
+    app = create_app(
+        settings,
+        public_ipv4_provider=public_ipv4,
+        resource_provider=failed_resources,
     )
     async with TestClient(TestServer(app)) as client:
         response = await client.get("/status")

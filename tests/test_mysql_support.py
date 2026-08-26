@@ -11,6 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from cloudbrowser.database import create_database_engine
 from cloudbrowser.models import Base
 from cloudbrowser.schema import (
+    edge_platform_migration_statements,
+    migrate_edge_platform_schema,
     migrate_mysql_active_uniqueness,
     mysql_active_uniqueness_statements,
     mysql_device_platform_constraint_statements,
@@ -269,6 +271,78 @@ class _DevicePlatformInspector:
     def get_check_constraints(self, table: str) -> list[dict[str, str]]:
         assert table == "device_sessions"
         return [{"name": name, "sqltext": ""} for name in self.names]
+
+
+class _EdgePlatformInspector:
+    def __init__(self, populated: bool = False, constrained: bool = False) -> None:
+        self.populated = populated
+        self.constrained = constrained
+
+    def get_columns(self, table: str) -> list[dict[str, str]]:
+        assert table in {"edge_nodes", "node_registration_requests"}
+        return [{"name": "platform"}] if self.populated else []
+
+    def get_check_constraints(self, table: str) -> list[dict[str, str]]:
+        assert table in {"edge_nodes", "node_registration_requests"}
+        if not self.constrained:
+            return []
+        return [{"name": f"ck_{table}_platform", "sqltext": ""}]
+
+
+def test_mysql_edge_platform_migration_is_safe_and_idempotent() -> None:
+    assert edge_platform_migration_statements(_EdgePlatformInspector(), "mysql") == [
+        "ALTER TABLE edge_nodes ADD COLUMN platform VARCHAR(20) NOT NULL DEFAULT 'linux'",
+        (
+            "ALTER TABLE edge_nodes ADD CONSTRAINT ck_edge_nodes_platform "
+            "CHECK (platform IN ('linux','windows'))"
+        ),
+        (
+            "ALTER TABLE node_registration_requests ADD COLUMN platform "
+            "VARCHAR(20) NOT NULL DEFAULT 'linux'"
+        ),
+        (
+            "ALTER TABLE node_registration_requests ADD CONSTRAINT "
+            "ck_node_registration_requests_platform CHECK (platform IN ('linux','windows'))"
+        ),
+    ]
+    assert edge_platform_migration_statements(
+        _EdgePlatformInspector(populated=True, constrained=True), "mysql"
+    ) == []
+
+
+def test_sqlite_edge_platform_migration_backfills_existing_rows(tmp_path: Path) -> None:
+    engine = create_database_engine(f"sqlite:///{tmp_path / 'legacy-platform.db'}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE edge_nodes (id INTEGER PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO edge_nodes (id) VALUES (1)"))
+        connection.execute(
+            text("CREATE TABLE node_registration_requests (id VARCHAR(64) PRIMARY KEY)")
+        )
+        connection.execute(text("INSERT INTO node_registration_requests (id) VALUES ('old')"))
+
+    migrate_edge_platform_schema(engine)
+    migrate_edge_platform_schema(engine)
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT platform FROM edge_nodes WHERE id = 1")) == "linux"
+        assert (
+            connection.scalar(
+                text("SELECT platform FROM node_registration_requests WHERE id = 'old'")
+            )
+            == "linux"
+        )
+        with pytest.raises(IntegrityError):
+            connection.execute(text("INSERT INTO edge_nodes (id, platform) VALUES (2, 'darwin')"))
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text("UPDATE node_registration_requests SET platform = 'darwin' WHERE id = 'old'")
+            )
+
+
+def test_sqlite_edge_platform_add_column_inlines_closed_check() -> None:
+    statements = edge_platform_migration_statements(_EdgePlatformInspector(), "sqlite")
+
+    assert all("CHECK (platform IN ('linux','windows'))" in statement for statement in statements)
 
 
 def test_mysql_device_platform_constraint_replaces_macos_only_check() -> None:

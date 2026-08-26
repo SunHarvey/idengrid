@@ -76,7 +76,7 @@ REGISTER_BODY=$(python3 - "$PUBLIC_KEY" "$MACHINE_FINGERPRINT" "$HOSTNAME_REPORT
   "$PUBLIC_IP" "$OS_NAME" "$CPU_COUNT" "$MEMORY_TOTAL" "$DISK_TOTAL" <<'PY'
 import json,sys
 key,machine,hostname,ip,os_name,cpu,memory,disk=sys.argv[1:]
-print(json.dumps({"public_key_pem":open(key).read(),"machine_fingerprint":machine,
+print(json.dumps({"public_key_pem":open(key).read(),"platform":"linux","machine_fingerprint":machine,
  "reported_hostname":hostname,"public_ipv4":ip,"os_name":os_name,"cpu_count":int(cpu),
  "memory_total_bytes":int(memory),"disk_total_bytes":int(disk),"agent_version":"1.0.0"},
  separators=(",",":")))
@@ -133,9 +133,21 @@ while :; do
   }
   sleep "$POLL_INTERVAL_SECONDS"
 done
-curl --config "$AUTH_CONFIG" -X POST \
+CLAIM_CHALLENGE=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["claim_challenge"])' <<<"$STATUS_JSON")
+[[ ${#CLAIM_CHALLENGE} -ge 32 ]] || { printf 'Invalid claim challenge.\n' >&2; exit 1; }
+CLAIM_MESSAGE="$WORK/claim-message"
+CLAIM_SIGNATURE="$WORK/claim.sig"
+printf 'hermes-node-claim-v1\n%s\n%s\n%s\n%s\n' \
+  "$REQUEST_ID" "$CLAIM_CHALLENGE" "$PUBLIC_IP" "$MACHINE_FINGERPRINT" > "$CLAIM_MESSAGE"
+openssl pkeyutl -sign -rawin -inkey "$PRIVATE_KEY" -in "$CLAIM_MESSAGE" -out "$CLAIM_SIGNATURE"
+CLAIM_BODY=$(python3 - "$CLAIM_CHALLENGE" "$CLAIM_SIGNATURE" <<'PY'
+import base64,json,sys
+print(json.dumps({"challenge":sys.argv[1],"signature":base64.b64encode(open(sys.argv[2],'rb').read()).decode()},separators=(",",":")))
+PY
+)
+curl --config "$AUTH_CONFIG" -H 'Content-Type: application/json' --data-binary "$CLAIM_BODY" \
   "$SERVER/api/node-registration-requests/$REQUEST_ID/claim-approved" -o "$CLAIM_JSON"
-chmod 0600 "$CLAIM_JSON"; rm -f "$AUTH_CONFIG"
+CLAIM_CHALLENGE=""; CLAIM_BODY=""; chmod 0600 "$CLAIM_JSON"; rm -f "$AUTH_CONFIG" "$CLAIM_MESSAGE" "$CLAIM_SIGNATURE"
 readarray -t CLAIM < <(python3 - "$CLAIM_JSON" <<'PY'
 import json,sys
 x=json.load(open(sys.argv[1]));

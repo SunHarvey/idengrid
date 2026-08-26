@@ -93,10 +93,14 @@ class DeviceSession(Base):
 
 class EdgeNode(Base):
     __tablename__ = "edge_nodes"
+    __table_args__ = (
+        CheckConstraint("platform IN ('linux','windows')", name="ck_edge_nodes_platform"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     endpoint: Mapped[str] = mapped_column(String(255), unique=True)
     shared_secret: Mapped[str] = mapped_column(String(255))
+    platform: Mapped[str] = mapped_column(String(20), default="linux", server_default="linux")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     maintenance_mode: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=expression.false()
@@ -156,6 +160,9 @@ class NodeEnrollment(Base):
 class NodeRegistrationRequest(Base):
     __tablename__ = "node_registration_requests"
     __table_args__ = (
+        CheckConstraint(
+            "platform IN ('linux','windows')", name="ck_node_registration_requests_platform"
+        ),
         Index(
             "uq_active_node_registration_machine",
             "machine_fingerprint",
@@ -185,6 +192,7 @@ class NodeRegistrationRequest(Base):
     public_key_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     machine_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     reported_hostname: Mapped[str] = mapped_column(String(255))
+    platform: Mapped[str] = mapped_column(String(20), default="linux", server_default="linux")
     actual_public_ipv4: Mapped[str] = mapped_column(String(15))
     os_name: Mapped[str] = mapped_column(String(100))
     cpu_count: Mapped[int] = mapped_column(Integer)

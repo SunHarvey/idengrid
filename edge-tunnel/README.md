@@ -90,3 +90,14 @@ python3.11 -m venv .venv
 .venv/bin/pip install -e .
 .venv/bin/pytest -q
 ```
+
+### Windows security-test boundary
+
+The Windows configuration loader opens the leaf and every parent directory with
+`CreateFileW`, rejects reparse points, keeps the handles open, and obtains file
+identity, final path, owner, and DACL from those same handles. Linux CI injects
+handle snapshots to exercise path-swap, parent ACL/owner, reparse, and numeric
+access-mask cases; it does **not** execute or validate the Windows ABI. A real
+Windows Server test lane is still required to validate `ctypes` calling
+conventions and behavior on NTFS/ReFS, redirected filesystems, domain SIDs, and
+inherited enterprise ACLs before release.

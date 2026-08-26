@@ -13,6 +13,47 @@ class SchemaInspector(Protocol):
     def get_check_constraints(self, table_name: str) -> list[dict]: ...
 
 
+def edge_platform_migration_statements(
+    schema: SchemaInspector, _dialect_name: str
+) -> list[str]:
+    """Add platform metadata without rewriting or dropping existing rows."""
+    statements: list[str] = []
+    for table in ("edge_nodes", "node_registration_requests"):
+        columns = {item["name"] for item in schema.get_columns(table)}
+        if "platform" not in columns:
+            inline_check = (
+                " CHECK (platform IN ('linux','windows'))"
+                if _dialect_name == "sqlite"
+                else ""
+            )
+            statements.append(
+                f"ALTER TABLE {table} ADD COLUMN platform VARCHAR(20) "
+                f"NOT NULL DEFAULT 'linux'{inline_check}"
+            )
+        if _dialect_name == "mysql":
+            constraint = f"ck_{table}_platform"
+            constraints = {
+                item["name"]
+                for item in schema.get_check_constraints(table)
+                if item.get("name")
+            }
+            if constraint not in constraints:
+                statements.append(
+                    f"ALTER TABLE {table} ADD CONSTRAINT {constraint} "
+                    "CHECK (platform IN ('linux','windows'))"
+                )
+    return statements
+
+
+def migrate_edge_platform_schema(engine: Engine) -> None:
+    """Idempotently backfill legacy Edge records as Linux on SQLite/MySQL."""
+    schema = inspect(engine)
+    statements = edge_platform_migration_statements(schema, engine.dialect.name)
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
 _MYSQL_ACTIVE_UNIQUENESS = (
     (
         "node_enrollments",
