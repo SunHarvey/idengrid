@@ -137,9 +137,7 @@ def test_settings_environment_accepts_timeout_safe_upper_bound(monkeypatch, name
         ("EDGE_CONNECT_TIMEOUT", 120),
     ],
 )
-def test_settings_environment_rejects_timeout_above_safe_upper_bound(
-    monkeypatch, name, maximum
-):
+def test_settings_environment_rejects_timeout_above_safe_upper_bound(monkeypatch, name, maximum):
     monkeypatch.setenv("EDGE_NODE_ID", "edge-sg01")
     monkeypatch.setenv("EDGE_TICKET_SECRET", "x" * 32)
     monkeypatch.setenv(name, str(maximum + 0.001))
