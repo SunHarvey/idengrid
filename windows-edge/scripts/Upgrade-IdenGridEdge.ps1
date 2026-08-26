@@ -202,8 +202,10 @@ try {
     Expand-VerifiedBundle $bundle $newTarget
     $bundleManifest=Assert-BundleManifest $newTarget $Version
     if ($bundleManifest.version -ne $Version) { throw 'Bundle version does not match the requested version.' }
-    & icacls.exe $newTarget /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-19:(OI)(CI)RX' '*S-1-5-20:(OI)(CI)RX' /T /C | Out-Null
-    if($LASTEXITCODE-ne 0){throw 'Failed to apply version filesystem ACL.'}
+    & icacls.exe $newTarget /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-19:(OI)(CI)RX' '*S-1-5-20:(OI)(CI)RX' | Out-Null
+    if($LASTEXITCODE-ne 0){throw 'Failed to apply version root ACL.'}
+    & icacls.exe (Join-Path $newTarget '*') /reset /T /C | Out-Null
+    if($LASTEXITCODE-ne 0){throw 'Failed to reset version child ACLs.'}
     & (Join-Path $newTarget 'runtime\python.exe') -I -B -c 'import aiohttp,psutil,edge_tunnel'
     if ($LASTEXITCODE -ne 0) { throw 'Offline runtime self-check failed.' }
     & (Join-Path $newTarget 'runtime\python.exe') -I -B -m edge_tunnel --help | Out-Null

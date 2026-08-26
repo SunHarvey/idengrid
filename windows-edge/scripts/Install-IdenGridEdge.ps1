@@ -366,7 +366,8 @@ try {
     foreach ($dir in $dirs) { New-Item -ItemType Directory -Path (Join-Path $ProgramDataRoot $dir) -Force | Out-Null }
     $configTarget = Join-Path $ProgramDataRoot 'config\edge.json'
     Invoke-Icacls -Path $ProgramRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
-    Invoke-Icacls -Path $versionRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX','/T','/C')
+    Invoke-Icacls -Path $versionRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
+    Invoke-Icacls -Path (Join-Path $versionRoot '*') -AclArguments @('/reset','/T','/C')
     if ($PSCmdlet.ParameterSetName -eq 'Server') {
         $edgeConfig = [pscustomobject][ordered]@{
             schema_version=1; node_id=[string]$claim.node_name; ticket_secret=[string]$claim.edge_ticket_secret
