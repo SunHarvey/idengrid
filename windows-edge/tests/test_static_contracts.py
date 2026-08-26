@@ -224,6 +224,10 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("robocopy.exe", install)
         self.assertIn("Assert-ServiceNamesAvailable", install)
         self.assertIn("ImagePath", install)
+        self.assertIn("function Remove-ManagedJunction", install)
+        self.assertIn("[IO.Directory]::Delete", install)
+        self.assertIn("$versionRoot", install)
+        self.assertIn("'/T','/C'", install)
 
     def test_config_owner_and_claim_closed_shape_match_runtime(self) -> None:
         install = self.text("scripts/Install-IdenGridEdge.ps1")
@@ -266,6 +270,10 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("$previousBackup", upgrade)
         self.assertIn("$stateOriginal", upgrade)
         self.assertIn("WriteAllBytes($statePath,$stateOriginal)", upgrade)
+        self.assertIn("function Remove-ManagedJunction", upgrade)
+        self.assertIn("[IO.Directory]::Delete", upgrade)
+        self.assertIn("icacls.exe $newTarget", upgrade)
+        self.assertIn("-I -B -m edge_tunnel --help", upgrade)
 
     def test_claim_has_secondary_type_and_length_validation(self) -> None:
         install = self.text("scripts/Install-IdenGridEdge.ps1")

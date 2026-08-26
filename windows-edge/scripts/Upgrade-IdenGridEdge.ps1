@@ -103,6 +103,13 @@ function Assert-ManagedVersionJunction([string]$Path,[string]$ExpectedVersion) {
     foreach($leaf in @('runtime\python.exe','service\IdenGridEdgeService.exe','service\IdenGridEdgeGateway.exe')){if(-not(Test-Path -LiteralPath (Join-Path $target $leaf)-PathType Leaf)){throw 'Managed version critical file is missing.'}}
     return $target
 }
+function Remove-ManagedJunction([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item=Get-Item -LiteralPath $Path -Force
+    if(-not($item.Attributes -band [IO.FileAttributes]::ReparsePoint)-or-not $item.PSIsContainer){throw 'Refusing to remove a non-junction path.'}
+    [IO.Directory]::Delete([IO.Path]::GetFullPath($Path),$false)
+    if(Test-Path -LiteralPath $Path){throw 'Managed junction removal failed.'}
+}
 function Expand-VerifiedBundle([string]$Archive,[string]$Destination) {
     $root = [IO.Path]::GetFullPath($Destination).TrimEnd('\') + '\'
     $seen = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -195,9 +202,11 @@ try {
     Expand-VerifiedBundle $bundle $newTarget
     $bundleManifest=Assert-BundleManifest $newTarget $Version
     if ($bundleManifest.version -ne $Version) { throw 'Bundle version does not match the requested version.' }
-    & (Join-Path $newTarget 'runtime\python.exe') -I -c 'import aiohttp, psutil, edge_tunnel'
+    & icacls.exe $newTarget /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-19:(OI)(CI)RX' '*S-1-5-20:(OI)(CI)RX' /T /C | Out-Null
+    if($LASTEXITCODE-ne 0){throw 'Failed to apply version filesystem ACL.'}
+    & (Join-Path $newTarget 'runtime\python.exe') -I -B -c 'import aiohttp,psutil,edge_tunnel'
     if ($LASTEXITCODE -ne 0) { throw 'Offline runtime self-check failed.' }
-    & (Join-Path $newTarget 'runtime\python.exe') -I -m edge_tunnel --help | Out-Null
+    & (Join-Path $newTarget 'runtime\python.exe') -I -B -m edge_tunnel --help | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Offline Edge CLI self-check failed.' }
 
     $oldTarget=Assert-ManagedVersionJunction $current $currentVersion
@@ -206,7 +215,7 @@ try {
     Invoke-ServiceAction $edgeWrapper 'stop'
     $nextJunction = Join-Path $ProgramRoot 'current.next'
     $previous = Join-Path $ProgramRoot 'previous'
-    if (Test-Path -LiteralPath $nextJunction) { Remove-Item -LiteralPath $nextJunction -Force }
+    if (Test-Path -LiteralPath $nextJunction) { Remove-ManagedJunction $nextJunction }
     if (Test-Path -LiteralPath $previousBackup) { throw 'Stale previous backup requires operator attention.' }
     if (Test-Path -LiteralPath $previous) { Assert-ManagedVersionJunction $previous $null | Out-Null; Rename-Item -LiteralPath $previous -NewName 'previous.backup' }
     New-Item -ItemType Junction -Path $nextJunction -Target $newTarget | Out-Null
@@ -226,13 +235,13 @@ try {
     $state | Add-Member -NotePropertyName version -NotePropertyValue $Version -Force
     $state | Add-Member -NotePropertyName upgraded_at -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
     $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
-    if (Test-Path -LiteralPath $previousBackup) { Remove-Item -LiteralPath $previousBackup -Force }
+    if (Test-Path -LiteralPath $previousBackup) { Remove-ManagedJunction $previousBackup }
     $upgradeSucceeded=$true
     Write-Output "IdenGrid Edge upgraded to $Version."
 } catch {
     $failure = $_.Exception.Message.Substring(0,[Math]::Min(300,$_.Exception.Message.Length))
     if ($oldMoved -and -not $switched -and (Test-Path -LiteralPath (Join-Path $ProgramRoot 'previous'))) {
-        if (Test-Path -LiteralPath $current) { Remove-Item -LiteralPath $current -Force }
+        if (Test-Path -LiteralPath $current) { Remove-ManagedJunction $current }
         Rename-Item -LiteralPath (Join-Path $ProgramRoot 'previous') -NewName 'current'
         $oldMoved = $false
         $restoredTarget=Assert-ManagedVersionJunction $current $currentVersion
@@ -245,7 +254,7 @@ try {
             $failedTarget=Assert-ManagedVersionJunction $current $Version
             & (Join-Path $failedTarget 'service\IdenGridEdgeGateway.exe') stop 2>$null
             & (Join-Path $failedTarget 'service\IdenGridEdgeService.exe') stop 2>$null
-            Remove-Item -LiteralPath $current -Force
+            Remove-ManagedJunction $current
             Rename-Item -LiteralPath (Join-Path $ProgramRoot 'previous') -NewName 'current'
             $restoredTarget=Assert-ManagedVersionJunction $current $currentVersion
             $edgeWrapper=Join-Path $restoredTarget 'service\IdenGridEdgeService.exe'

@@ -186,8 +186,15 @@ function Assert-BundleManifest([string]$Root,[string]$ExpectedVersion) {
     }
     return $manifest
 }
+function Remove-ManagedJunction([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or -not $item.PSIsContainer) { throw 'Refusing to remove a non-junction path.' }
+    [IO.Directory]::Delete([IO.Path]::GetFullPath($Path),$false)
+    if (Test-Path -LiteralPath $Path) { throw 'Managed junction removal failed.' }
+}
 function Set-Junction([string]$Path,[string]$Target) {
-    if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
+    Remove-ManagedJunction $Path
     New-Item -ItemType Junction -Path $Path -Target $Target | Out-Null
 }
 function Get-ServiceImagePath([string]$Name) {
@@ -244,7 +251,7 @@ function Invoke-InstallRollback {
         }
         $current = Join-Path $ProgramRoot 'current'
         if ($currentJunctionCreated -and (Test-Path -LiteralPath $current)) {
-            Remove-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+            Remove-ManagedJunction $current
         }
         if (-not [string]::IsNullOrEmpty($versionRoot) -and (Test-Path -LiteralPath $versionRoot)) {
             Remove-Item -LiteralPath $versionRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -359,6 +366,7 @@ try {
     foreach ($dir in $dirs) { New-Item -ItemType Directory -Path (Join-Path $ProgramDataRoot $dir) -Force | Out-Null }
     $configTarget = Join-Path $ProgramDataRoot 'config\edge.json'
     Invoke-Icacls -Path $ProgramRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
+    Invoke-Icacls -Path $versionRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX','/T','/C')
     if ($PSCmdlet.ParameterSetName -eq 'Server') {
         $edgeConfig = [pscustomobject][ordered]@{
             schema_version=1; node_id=[string]$claim.node_name; ticket_secret=[string]$claim.edge_ticket_secret
