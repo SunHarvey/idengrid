@@ -1,6 +1,6 @@
+import ctypes
 import json
 import math
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +8,9 @@ from edge_tunnel.app import Settings
 from edge_tunnel.config import (
     Win32ConfigAPI,
     WindowsObjectInfo,
-    _read_limited,
+    _CtypesWin32Bindings,
+    _parse_json,
+    _settings_from_mapping,
     _windows_ancestor_sddl_is_restricted,
     _windows_directory_sddl_is_restricted,
     _windows_sddl_is_restricted,
@@ -36,6 +38,10 @@ def write_config(tmp_path, data=VALID_CONFIG):
     return path
 
 
+def settings_from_json(data):
+    return _settings_from_mapping(_parse_json(json.dumps(data).encode()))
+
+
 def test_settings_load_required_identity_and_limits_from_environment(monkeypatch):
     monkeypatch.setenv("EDGE_NODE_ID", "edge-sg01")
     monkeypatch.setenv("EDGE_TICKET_SECRET", "x" * 32)
@@ -46,6 +52,14 @@ def test_settings_load_required_identity_and_limits_from_environment(monkeypatch
     assert settings.node_id == "edge-sg01"
     assert settings.ticket_secret == b"x" * 32
     assert settings.max_connections == 12
+
+
+def test_settings_file_loader_is_unavailable_on_linux(tmp_path, monkeypatch):
+    path = write_config(tmp_path)
+    monkeypatch.setattr("edge_tunnel.config.os.name", "posix")
+
+    with pytest.raises(RuntimeError, match="Windows"):
+        Settings.from_file(path)
 
 
 @pytest.mark.parametrize(
@@ -100,6 +114,68 @@ def test_settings_environment_rejects_integer_values_above_safe_bounds(monkeypat
 
 
 @pytest.mark.parametrize(
+    ("name", "maximum"),
+    [
+        ("EDGE_IDLE_TIMEOUT", 3_600),
+        ("EDGE_MAX_DURATION", 32_400),
+        ("EDGE_CONNECT_TIMEOUT", 120),
+    ],
+)
+def test_settings_environment_accepts_timeout_safe_upper_bound(monkeypatch, name, maximum):
+    monkeypatch.setenv("EDGE_NODE_ID", "edge-sg01")
+    monkeypatch.setenv("EDGE_TICKET_SECRET", "x" * 32)
+    monkeypatch.setenv(name, str(maximum))
+
+    Settings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("name", "maximum"),
+    [
+        ("EDGE_IDLE_TIMEOUT", 3_600),
+        ("EDGE_MAX_DURATION", 32_400),
+        ("EDGE_CONNECT_TIMEOUT", 120),
+    ],
+)
+def test_settings_environment_rejects_timeout_above_safe_upper_bound(
+    monkeypatch, name, maximum
+):
+    monkeypatch.setenv("EDGE_NODE_ID", "edge-sg01")
+    monkeypatch.setenv("EDGE_TICKET_SECRET", "x" * 32)
+    monkeypatch.setenv(name, str(maximum + 0.001))
+
+    with pytest.raises(RuntimeError, match="invalid edge configuration"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("field", "maximum"),
+    [
+        ("idle_timeout", 3_600),
+        ("max_connection_seconds", 32_400),
+        ("connect_timeout", 120),
+    ],
+)
+def test_settings_json_accepts_timeout_safe_upper_bound(field, maximum):
+    settings = settings_from_json({**VALID_CONFIG, field: maximum})
+
+    assert getattr(settings, field) == maximum
+
+
+@pytest.mark.parametrize(
+    ("field", "maximum"),
+    [
+        ("idle_timeout", 3_600),
+        ("max_connection_seconds", 32_400),
+        ("connect_timeout", 120),
+    ],
+)
+def test_settings_json_rejects_timeout_above_safe_upper_bound(field, maximum):
+    with pytest.raises(RuntimeError, match=field):
+        settings_from_json({**VALID_CONFIG, field: maximum + 0.001})
+
+
+@pytest.mark.parametrize(
     ("node", "secret"), [("", "x" * 32), ("edge-sg01", "short"), ("bad/node", "x" * 32)]
 )
 def test_settings_reject_missing_or_unsafe_identity(monkeypatch, node, secret):
@@ -110,8 +186,8 @@ def test_settings_reject_missing_or_unsafe_identity(monkeypatch, node, secret):
         Settings.from_env()
 
 
-def test_settings_load_complete_strict_json_file(tmp_path):
-    settings = Settings.from_file(write_config(tmp_path))
+def test_settings_load_complete_strict_json():
+    settings = settings_from_json(VALID_CONFIG)
 
     assert settings.node_id == "edge-windows-01"
     assert settings.ticket_secret == b"s" * 32
@@ -119,12 +195,10 @@ def test_settings_load_complete_strict_json_file(tmp_path):
     assert settings.max_bytes_per_connection == 2_147_483_648
 
 
-def test_settings_loads_powershell_51_utf8_bom_config(tmp_path):
-    path = tmp_path / "edge.json"
-    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(VALID_CONFIG).encode("utf-8"))
-    path.chmod(0o600)
+def test_settings_loads_powershell_51_utf8_bom_config():
+    raw = b"\xef\xbb\xbf" + json.dumps(VALID_CONFIG).encode("utf-8")
 
-    settings = Settings.from_file(path)
+    settings = _settings_from_mapping(_parse_json(raw))
 
     assert settings.node_id == "edge-windows-01"
     assert settings.ticket_secret == b"s" * 32
@@ -142,32 +216,32 @@ def test_settings_loads_powershell_51_utf8_bom_config(tmp_path):
         ({"ticket_max_ttl": 301}, "ticket_max_ttl"),
     ],
 )
-def test_settings_file_rejects_unknown_or_invalid_fields_without_values(tmp_path, change, field):
+def test_settings_json_rejects_unknown_or_invalid_fields_without_values(change, field):
     data = {**VALID_CONFIG, **change}
     secret = data["ticket_secret"]
 
     with pytest.raises(RuntimeError) as error:
-        Settings.from_file(write_config(tmp_path, data))
+        settings_from_json(data)
 
     assert field in str(error.value)
     assert secret not in str(error.value)
 
 
-def test_settings_file_rejects_missing_field(tmp_path):
+def test_settings_json_rejects_missing_field():
     data = dict(VALID_CONFIG)
     del data["connect_timeout"]
 
     with pytest.raises(RuntimeError, match="connect_timeout"):
-        Settings.from_file(write_config(tmp_path, data))
+        settings_from_json(data)
 
 
 @pytest.mark.parametrize("field", ["idle_timeout", "max_connection_seconds", "connect_timeout"])
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, 1e309])
-def test_settings_file_rejects_non_finite_floats(tmp_path, field, value):
+def test_settings_json_rejects_non_finite_floats(field, value):
     data = {**VALID_CONFIG, field: value}
 
     with pytest.raises(RuntimeError):
-        Settings.from_file(write_config(tmp_path, data))
+        settings_from_json(data)
 
 
 @pytest.mark.parametrize(
@@ -178,81 +252,106 @@ def test_settings_file_rejects_non_finite_floats(tmp_path, field, value):
         ("max_bytes_per_connection", 1024**4 + 1),
     ],
 )
-def test_settings_file_rejects_integer_values_above_safe_bounds(tmp_path, field, value):
+def test_settings_json_rejects_integer_values_above_safe_bounds(field, value):
     with pytest.raises(RuntimeError, match=field):
-        Settings.from_file(write_config(tmp_path, {**VALID_CONFIG, field: value}))
+        settings_from_json({**VALID_CONFIG, field: value})
 
 
-def test_read_limited_rejects_large_regular_file_before_read(monkeypatch):
-    monkeypatch.setattr(
-        "edge_tunnel.config.os.fstat", lambda descriptor: SimpleNamespace(st_size=65_537)
+class FakeReadKernel:
+    def __init__(self, payload, *, reported_size=None, size_result=True, read_results=None):
+        self.payload = payload
+        self.reported_size = len(payload) if reported_size is None else reported_size
+        self.size_result = size_result
+        self.read_results = iter(read_results) if read_results is not None else None
+        self.offset = 0
+
+    def GetFileSizeEx(self, handle, size):
+        size._obj.value = self.reported_size
+        return self.size_result
+
+    def ReadFile(self, handle, buffer, capacity, count, overlapped):
+        result = True if self.read_results is None else next(self.read_results)
+        if not result:
+            return False
+        chunk = self.payload[self.offset : self.offset + capacity]
+        ctypes.memmove(buffer, chunk, len(chunk))
+        count._obj.value = len(chunk)
+        self.offset += len(chunk)
+        return True
+
+
+def fake_ctypes_windows_bindings(kernel):
+    bindings = object.__new__(_CtypesWin32Bindings)
+    bindings.ctypes = SimpleNamespace(
+        c_longlong=ctypes.c_longlong,
+        byref=ctypes.byref,
+        create_string_buffer=ctypes.create_string_buffer,
+        get_last_error=lambda: 5,
+        FormatError=lambda code: "injected error",
     )
-    monkeypatch.setattr(
-        "edge_tunnel.config.os.read",
-        lambda descriptor, count: pytest.fail("oversize file must not be read"),
-    )
+    bindings.wintypes = SimpleNamespace(DWORD=ctypes.c_uint32)
+    bindings.kernel = kernel
+    return bindings
+
+
+def test_windows_read_limited_loops_after_short_reads():
+    class ShortReadKernel(FakeReadKernel):
+        def ReadFile(self, handle, buffer, capacity, count, overlapped):
+            return super().ReadFile(handle, buffer, min(capacity, 3), count, overlapped)
+
+    payload = b"short reads must be joined"
+    bindings = fake_ctypes_windows_bindings(ShortReadKernel(payload))
+
+    assert bindings.read_limited(42, 65_536) == payload
+
+
+def test_windows_read_limited_accepts_exactly_65536_bytes():
+    payload = b"x" * 65_536
+    bindings = fake_ctypes_windows_bindings(FakeReadKernel(payload))
+
+    assert bindings.read_limited(42, 65_536) == payload
+
+
+def test_windows_read_limited_rejects_file_reported_as_65537_bytes_before_read():
+    kernel = FakeReadKernel(b"x" * 65_537)
+    bindings = fake_ctypes_windows_bindings(kernel)
 
     with pytest.raises(RuntimeError, match="too large"):
-        _read_limited(123)
+        bindings.read_limited(42, 65_536)
+
+    assert kernel.offset == 0
 
 
-def test_read_limited_loops_until_eof_when_reads_are_short(monkeypatch):
-    chunks = iter((b'{"schema_', b'version":1}', b""))
-    monkeypatch.setattr(
-        "edge_tunnel.config.os.fstat", lambda descriptor: SimpleNamespace(st_size=20)
-    )
-    monkeypatch.setattr("edge_tunnel.config.os.read", lambda descriptor, count: next(chunks))
+def test_windows_read_limited_rejects_file_that_grows_to_65537_bytes():
+    kernel = FakeReadKernel(b"x" * 65_537, reported_size=65_536)
+    bindings = fake_ctypes_windows_bindings(kernel)
 
-    assert _read_limited(123) == b'{"schema_version":1}'
+    with pytest.raises(RuntimeError, match="too large"):
+        bindings.read_limited(42, 65_536)
+
+    assert kernel.offset == 65_537
 
 
-def test_settings_file_rejects_duplicate_json_keys(tmp_path):
-    path = tmp_path / "edge.json"
+def test_windows_read_limited_reports_get_file_size_error():
+    bindings = fake_ctypes_windows_bindings(FakeReadKernel(b"", size_result=False))
+
+    with pytest.raises(OSError, match="GetFileSizeEx failed"):
+        bindings.read_limited(42, 65_536)
+
+
+def test_windows_read_limited_reports_read_file_error():
+    bindings = fake_ctypes_windows_bindings(FakeReadKernel(b"x", read_results=[False]))
+
+    with pytest.raises(OSError, match="ReadFile failed"):
+        bindings.read_limited(42, 65_536)
+
+
+def test_settings_json_rejects_duplicate_keys():
     body = json.dumps(VALID_CONFIG)
     body = body[:-1] + ', "node_id": "second-node"}'
-    path.write_text(body, encoding="utf-8")
-    path.chmod(0o600)
 
     with pytest.raises(RuntimeError, match="node_id"):
-        Settings.from_file(path)
-
-
-def test_settings_file_rejects_symlink(tmp_path):
-    target = write_config(tmp_path)
-    link = tmp_path / "edge-link.json"
-    link.symlink_to(target)
-
-    with pytest.raises(RuntimeError, match="unsafe config path"):
-        Settings.from_file(link)
-
-
-def test_settings_file_rejects_group_or_world_permissions(tmp_path):
-    path = write_config(tmp_path)
-    path.chmod(0o640)
-
-    with pytest.raises(RuntimeError, match="permissions"):
-        Settings.from_file(path)
-
-
-def test_settings_file_rejects_reparse_attribute(tmp_path, monkeypatch):
-    path = write_config(tmp_path)
-    real_lstat = os.lstat
-
-    def reparse_lstat(candidate):
-        result = real_lstat(candidate)
-        if os.fspath(candidate) == os.fspath(path):
-
-            class ReparseStat:
-                st_mode = result.st_mode
-                st_file_attributes = 0x400
-
-            return ReparseStat()
-        return result
-
-    monkeypatch.setattr("edge_tunnel.config.os.lstat", reparse_lstat)
-
-    with pytest.raises(RuntimeError, match="unsafe config path"):
-        Settings.from_file(path)
+        _parse_json(body.encode())
 
 
 @pytest.mark.parametrize(

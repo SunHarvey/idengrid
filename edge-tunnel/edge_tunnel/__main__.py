@@ -15,11 +15,13 @@ def main() -> None:
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
-    if args.config:
+    if platform.system() == "Windows":
+        if not args.config:
+            parser.error("--config is required on Windows")
         settings = Settings.from_file(args.config)
-    elif platform.system() == "Windows":
-        parser.error("--config is required on Windows")
     else:
+        if args.config:
+            parser.error("--config is supported only on Windows")
         settings = Settings.from_env()
     app = create_app(settings)
     # Intentionally loopback-only: TLS and public exposure belong to Caddy.
