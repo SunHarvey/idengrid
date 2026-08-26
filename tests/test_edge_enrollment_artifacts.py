@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import json
 import subprocess
 import zipfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
+
+
+def load_windows_package_builder():
+    path = ROOT / "scripts" / "build_windows_edge_package.py"
+    spec = importlib.util.spec_from_file_location("windows_package_builder", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_package_build_is_deterministic_and_checksum_matches(tmp_path):
@@ -121,28 +134,47 @@ def test_node_installers_brand_visible_completion_output_only():
 
 
 def test_windows_package_build_is_allowlisted_reproducible_and_secret_free(tmp_path):
+    builder = load_windows_package_builder()
     source = tmp_path / "staging"
-    files = {
+    runtime_files = {
         "runtime/python.exe": b"python-runtime",
         "runtime/_ssl.pyd": b"ssl-extension",
         "runtime/libcrypto-3.dll": b"crypto-runtime",
-        "app/edge_tunnel/__init__.py": b"__version__ = '1.0.0'\n",
-        "gateway/caddy.exe": b"gateway",
-        "service/IdenGridEdgeService.exe": b"service-wrapper",
-        "scripts/Install-IdenGridEdge.ps1": b"$Server = 'https://api.example.com'\n",
-        "manifest.json": b'{"schema_version":1}\n',
-        "THIRD_PARTY_NOTICES.txt": b"example notices\n",
     }
+    files = {relative: (relative + "\n").encode() for relative in builder.ALLOWED_FILES}
+    files.update(runtime_files)
     for relative, data in files.items():
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+    expected = tmp_path / "runtime-expected.json"
+    expected.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "files": [
+                    {"path": path, "sha256": hashlib.sha256(data).hexdigest()}
+                    for path, data in sorted(runtime_files.items())
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     script = ROOT / "scripts" / "build_windows_edge_package.py"
     first = tmp_path / "first.zip"
     second = tmp_path / "second.zip"
     for output in (first, second):
         subprocess.run(
-            [str(ROOT / ".venv/bin/python"), str(script), "--source", str(source), "--output", str(output)],
+            [
+                str(ROOT / ".venv/bin/python"),
+                str(script),
+                "--source",
+                str(source),
+                "--output",
+                str(output),
+                "--expected-runtime-manifest",
+                str(expected),
+            ],
             check=True,
         )
 
@@ -235,3 +267,28 @@ def test_formal_windows_builder_uses_shared_validator_and_versioned_artifact_nam
     assert "build_windows_edge_package.py" in source
     assert 'IdenGrid-Edge-Windows-Server-2025-x64-v$Version.zip' in source
     assert "release-manifest.json" not in source  # signing is an isolated post-build step
+
+
+def test_windows_package_runtime_allowlist_rejects_injected_python_at_manifest_stage(tmp_path):
+    builder = load_windows_package_builder()
+    source = tmp_path / "stage"
+    injected = source / "runtime/Lib/site-packages/aiohttp/injected_backdoor.py"
+    injected.parent.mkdir(parents=True)
+    injected.write_bytes(b"raise SystemExit('backdoor')\n")
+    expected = tmp_path / "runtime-expected.json"
+    expected.write_text(json.dumps({"schema_version": 1, "files": []}), encoding="utf-8")
+
+    with pytest.raises(builder.PackageBuildError, match="runtime file set"):
+        builder.collect_files(source, expected)
+
+
+def test_windows_package_requires_complete_exact_stage(tmp_path):
+    builder = load_windows_package_builder()
+    source = tmp_path / "stage"
+    source.mkdir()
+    (source / "manifest.json").write_text('{"schema_version":1}\n', encoding="ascii")
+    expected = tmp_path / "runtime-expected.json"
+    expected.write_text(json.dumps({"schema_version": 1, "files": []}), encoding="utf-8")
+
+    with pytest.raises(builder.PackageBuildError, match="package file set"):
+        builder.collect_files(source, expected)

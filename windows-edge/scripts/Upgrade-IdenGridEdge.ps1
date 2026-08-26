@@ -122,22 +122,21 @@ function Expand-VerifiedBundle([string]$Archive,[string]$Destination) {
     # Pre-scan the complete central directory before writing extracted bytes.
     $MaxEntries=5000;$MaxEntryBytes=536870912L;$MaxTotalBytes=4294967296L;$MaxCompressionRatio=200L;$MaxManifestBytes=8388608L
     $root=[IO.Path]::GetFullPath($Destination).TrimEnd('\')+'\'
-    $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $targetIdentities=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $approved=New-Object Collections.Generic.List[object]
-    $reserved='^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$';$total=0L
+    $reserved='^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?$';$total=0L
     $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
     try {
         if($zip.Entries.Count -gt $MaxEntries){throw 'Bundle ZIP exceeds 5000 entries.'}
         foreach($entry in $zip.Entries){
             $name=$entry.FullName.Replace('\','/')
-            if([string]::IsNullOrWhiteSpace($name)-or$name.Contains(':')-or$name.StartsWith('/')-or$name -match '(^|/)(\.|\.\.)(/|$)'){throw 'Bundle ZIP contains an NTFS alternate data stream or unsafe path.'}
+            if([string]::IsNullOrWhiteSpace($name)-or$name.Contains(':')-or$name.Contains('//')-or$name.StartsWith('/')-or$name -match '(^|/)(\.|\.\.)(/|$)'){throw 'Bundle ZIP contains an NTFS alternate data stream or unsafe path.'}
             $parts=@($name.TrimEnd('/').Split('/'))
             foreach($part in $parts){
                 if($part.EndsWith('.')-or$part.EndsWith(' ')){throw 'Bundle ZIP path has a trailing dot or space.'}
                 if($part -match $reserved){throw 'Bundle ZIP path uses a reserved Windows device name.'}
             }
-            $identity=($parts|ForEach-Object{$_.Normalize([Text.NormalizationForm]::FormC)})-join'/'
-            if(-not $seen.Add($identity)){throw 'Bundle ZIP contains a duplicate, case, or normalization collision.'}
+
             if($entry.Length -gt $MaxEntryBytes){throw 'Bundle ZIP entry exceeds 536870912 bytes.'}
             $total+=[long]$entry.Length
             if($total -gt $MaxTotalBytes){throw 'Bundle ZIP exceeds 4294967296 extracted bytes.'}
@@ -145,6 +144,8 @@ function Expand-VerifiedBundle([string]$Archive,[string]$Destination) {
             if($name.Equals('manifest.json',[StringComparison]::OrdinalIgnoreCase)-and$entry.Length -gt $MaxManifestBytes){throw 'Manifest exceeds package resource limits.'}
             $target=[IO.Path]::GetFullPath((Join-Path $Destination $name.Replace('/','\')))
             if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw 'Bundle ZIP contains an unsafe path.'}
+            $targetIdentity=$target.Normalize([Text.NormalizationForm]::FormC)
+            if(-not $targetIdentities.Add($targetIdentity)){throw 'Bundle ZIP contains a duplicate, case, or normalization collision.'}
             $approved.Add([pscustomobject]@{Entry=$entry;Target=$target})
         }
         New-Item -ItemType Directory -Path $Destination -Force|Out-Null

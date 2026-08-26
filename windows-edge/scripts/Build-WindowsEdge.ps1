@@ -16,6 +16,8 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = Join-Pa
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.Net.Http
 $ApprovedRuntimeManifestSha256 = 'b339fe8f1e701a1e4b4eb9aa4f42307dbcaa9c324b5fa08afc9772ad5ca3411f'
+$ApprovedRuntimeExpectedManifestSha256 = '4a7be03901ca0cf6d93d102a57f9f5bd0a05a00fbe06ec79d93c7a8f8d11d182'
+$RuntimeExpectedManifestPath = Join-Path $ScriptRoot '..\manifests\windows-x64-runtime-expected.json'
 
 function Assert-HttpsUri([string]$Value) {
     $uri = $null
@@ -43,22 +45,21 @@ function Expand-SafeZip([string]$Archive,[string]$Destination) {
     # Pre-scan the complete central directory before writing extracted bytes.
     $MaxEntries=5000;$MaxEntryBytes=536870912L;$MaxTotalBytes=4294967296L;$MaxCompressionRatio=200L;$MaxManifestBytes=8388608L
     $root=[IO.Path]::GetFullPath($Destination).TrimEnd('\')+'\'
-    $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $targetIdentities=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $approved=New-Object Collections.Generic.List[object]
-    $reserved='^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$';$total=0L
+    $reserved='^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|CLOCK\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?$';$total=0L
     $zip=[IO.Compression.ZipFile]::OpenRead($Archive)
     try {
         if($zip.Entries.Count -gt $MaxEntries){throw 'Runtime ZIP exceeds 5000 entries.'}
         foreach($entry in $zip.Entries){
             $name=$entry.FullName.Replace('\','/')
-            if([string]::IsNullOrWhiteSpace($name)-or$name.Contains(':')-or$name.StartsWith('/')-or$name -match '(^|/)(\.|\.\.)(/|$)'){throw 'Runtime ZIP contains an NTFS alternate data stream or unsafe path.'}
+            if([string]::IsNullOrWhiteSpace($name)-or$name.Contains(':')-or$name.Contains('//')-or$name.StartsWith('/')-or$name -match '(^|/)(\.|\.\.)(/|$)'){throw 'Runtime ZIP contains an NTFS alternate data stream or unsafe path.'}
             $parts=@($name.TrimEnd('/').Split('/'))
             foreach($part in $parts){
                 if($part.EndsWith('.')-or$part.EndsWith(' ')){throw 'Runtime ZIP path has a trailing dot or space.'}
                 if($part -match $reserved){throw 'Runtime ZIP path uses a reserved Windows device name.'}
             }
-            $identity=($parts|ForEach-Object{$_.Normalize([Text.NormalizationForm]::FormC)})-join'/'
-            if(-not $seen.Add($identity)){throw 'Runtime ZIP contains a duplicate, case, or normalization collision.'}
+
             if($entry.Length -gt $MaxEntryBytes){throw 'Runtime ZIP entry exceeds 536870912 bytes.'}
             $total+=[long]$entry.Length
             if($total -gt $MaxTotalBytes){throw 'Runtime ZIP exceeds 4294967296 extracted bytes.'}
@@ -66,6 +67,8 @@ function Expand-SafeZip([string]$Archive,[string]$Destination) {
             if($name.Equals('manifest.json',[StringComparison]::OrdinalIgnoreCase)-and$entry.Length -gt $MaxManifestBytes){throw 'Manifest exceeds package resource limits.'}
             $target=[IO.Path]::GetFullPath((Join-Path $Destination $name.Replace('/','\')))
             if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw 'Runtime ZIP contains an unsafe path.'}
+            $targetIdentity=$target.Normalize([Text.NormalizationForm]::FormC)
+            if(-not $targetIdentities.Add($targetIdentity)){throw 'Runtime ZIP contains a duplicate, case, or normalization collision.'}
             $approved.Add([pscustomobject]@{Entry=$entry;Target=$target})
         }
         New-Item -ItemType Directory -Path $Destination -Force|Out-Null
@@ -108,6 +111,8 @@ function Write-ReproducibleZip([string]$Source, [string]$Destination) {
 
 $manifestDigest=(Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($manifestDigest -ne $ApprovedRuntimeManifestSha256) { throw 'Runtime manifest is not on the production allowlist.' }
+$runtimeExpectedManifestDigest=(Get-FileHash -LiteralPath $RuntimeExpectedManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($runtimeExpectedManifestDigest -ne $ApprovedRuntimeExpectedManifestSha256) { throw 'Runtime expected manifest is not on the production allowlist.' }
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 Assert-RuntimeManifestSchema $manifest
 $work = Join-Path ([IO.Path]::GetTempPath()) ('idengrid-edge-build-' + [Guid]::NewGuid().ToString('N'))
@@ -170,7 +175,7 @@ Distributors must review and include upstream license texts before external rele
     $zipPath = Join-Path $OutputDirectory $zipName
     $validator = Join-Path $SourceRoot 'scripts\build_windows_edge_package.py'
     if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) { throw 'Package validator is unavailable.' }
-    & $python -I $validator --source $stage --output $zipPath | Out-Null
+    & $python -I $validator --source $stage --output $zipPath --expected-runtime-manifest $RuntimeExpectedManifestPath | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Package allowlist validation failed.' }
     Write-Output $zipPath
 } finally {

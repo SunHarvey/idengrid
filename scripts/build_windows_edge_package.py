@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Create a reproducible public Windows Edge ZIP from a strict staging allowlist."""
+"""Create a reproducible public Windows Edge ZIP from an exact staging manifest."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import stat
 import sys
 import zipfile
@@ -35,117 +36,12 @@ ALLOWED_FILES = {
     "templates/Caddyfile.template",
     "templates/edge.json.example",
 }
-# Exact files shipped by the pinned CPython 3.11 embeddable archive.  DLLs is
-# deliberately not a wildcard namespace: every native binary is named here.
-ALLOWED_RUNTIME_ROOTS = {
-    "LICENSE.txt",
-    "_asyncio.pyd",
-    "_bz2.pyd",
-    "_ctypes.pyd",
-    "_decimal.pyd",
-    "_elementtree.pyd",
-    "_hashlib.pyd",
-    "_lzma.pyd",
-    "_msi.pyd",
-    "_multiprocessing.pyd",
-    "_overlapped.pyd",
-    "_queue.pyd",
-    "_socket.pyd",
-    "_sqlite3.pyd",
-    "_ssl.pyd",
-    "_uuid.pyd",
-    "_zoneinfo.pyd",
-    "libcrypto-3.dll",
-    "libffi-8.dll",
-    "libssl-3.dll",
-    "pyexpat.pyd",
-    "python.exe",
-    "python.cat",
-    "pythonw.exe",
-    "python3.dll",
-    "python311.dll",
-    "python311._pth",
-    "python311.zip",
-    "select.pyd",
-    "sqlite3.dll",
-    "unicodedata.pyd",
-    "vcruntime140.dll",
-    "vcruntime140_1.dll",
-    "winsound.pyd",
-}
-ALLOWED_RUNTIME_SUFFIXES = {
-    ".cfg",
-    ".dll",
-    ".h",
-    ".pxd",
-    ".pxi",
-    ".py",
-    ".pyc",
-    ".pyd",
-    ".pyi",
-    ".pyx",
-}
-ALLOWED_RUNTIME_METADATA = {
-    "COPYING",
-    "INSTALLER",
-    "LICENSE",
-    "LICENSE.txt",
-    "METADATA",
-    "NOTICE",
-    "py.typed",
-    "RECORD",
-    "WHEEL",
-    "entry_points.txt",
-    "top_level.txt",
-}
-ALLOWED_SITE_PACKAGE_ROOTS = {
-    "aiohappyeyeballs",
-    "aiohttp",
-    "aiosignal",
-    "attr",
-    "attrs",
-    "cffi",
-    "cryptography",
-    "cryptography.libs",
-    "frozenlist",
-    "idna",
-    "multidict",
-    "propcache",
-    "psutil",
-    "pycparser",
-    "typing_extensions.py",
-    "yarl",
-}
-ALLOWED_SITE_PACKAGE_PREFIXES = (
-    "_cffi_backend.cp311-win_amd64.pyd",
-    "aiohappyeyeballs-2.6.1.dist-info",
-    "aiohttp-3.14.3.dist-info",
-    "aiosignal-1.4.0.dist-info",
-    "attrs-25.3.0.dist-info",
-    "cffi-1.17.1.dist-info",
-    "cryptography-45.0.5.dist-info",
-    "frozenlist-1.7.0.dist-info",
-    "idna-3.10.dist-info",
-    "multidict-6.6.4.dist-info",
-    "propcache-0.3.2.dist-info",
-    "psutil-7.0.0.dist-info",
-    "pycparser-2.22.dist-info",
-    "typing_extensions-4.14.1.dist-info",
-    "yarl-1.20.1.dist-info",
+DEFAULT_RUNTIME_EXPECTED_MANIFEST = (
+    Path(__file__).resolve().parents[1]
+    / "windows-edge"
+    / "manifests"
+    / "windows-x64-runtime-expected.json"
 )
-ALLOWED_NATIVE_SITE_FILES = {
-    "runtime/Lib/site-packages/_cffi_backend.cp311-win_amd64.pyd",
-    "runtime/Lib/site-packages/aiohttp/_http_parser.cp311-win_amd64.pyd",
-    "runtime/Lib/site-packages/aiohttp/_http_writer.cp311-win_amd64.pyd",
-    "runtime/Lib/site-packages/aiohttp/_websocket/mask.cp311-win_amd64.pyd",
-    "runtime/Lib/site-packages/aiohttp/_websocket/reader_c.cp311-win_amd64.pyd",
-    "runtime/Lib/site-packages/cryptography/hazmat/bindings/_rust.pyd",
-    "runtime/Lib/site-packages/frozenlist/_frozenlist.cp311-win_amd64.pyd",
-    "runtime/Lib/site-packages/multidict/_multidict.cp311-win_amd64.pyd",
-    "runtime/Lib/site-packages/propcache/_helpers_c.cp311-win_amd64.pyd",
-    "runtime/Lib/site-packages/psutil/_psutil_windows.pyd",
-    "runtime/Lib/site-packages/yarl/_quoting_c.cp311-win_amd64.pyd",
-}
 FORBIDDEN_NAMES = {
     ".env",
     "edge.json",
@@ -171,36 +67,47 @@ class PackageBuildError(RuntimeError):
     """A sanitized package validation failure."""
 
 
-def _allowed(relative: PurePosixPath) -> bool:
-    rendered = relative.as_posix()
-    if rendered in ALLOWED_FILES:
-        return True
-    if relative.parts[0] != "runtime":
-        return False
-    if len(relative.parts) == 2:
-        return relative.name in ALLOWED_RUNTIME_ROOTS
-    if relative.parts[1] == "DLLs":
-        # The pinned embeddable runtime currently has no DLLs subtree.  Native
-        # additions require an explicit manifest/allowlist update.
-        return False
-    if relative.parts[1:3] != ("Lib", "site-packages") or len(relative.parts) < 4:
-        return False
-    site_root = relative.parts[3]
-    if site_root not in ALLOWED_SITE_PACKAGE_ROOTS and site_root not in ALLOWED_SITE_PACKAGE_PREFIXES:
-        return False
-    if relative.suffix.lower() in {".pyd", ".dll"}:
-        return rendered in ALLOWED_NATIVE_SITE_FILES
-    return (
-        relative.suffix.lower() in ALLOWED_RUNTIME_SUFFIXES
-        or relative.name in ALLOWED_RUNTIME_METADATA
-        or relative.name.startswith(("LICENSE.", "COPYING."))
-    )
+def load_expected_runtime(manifest_path: Path) -> dict[str, str]:
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PackageBuildError("invalid runtime expected manifest") from exc
+    if not isinstance(document, dict) or set(document) != {"schema_version", "files"}:
+        raise PackageBuildError("invalid runtime expected manifest")
+    if document["schema_version"] != 1 or not isinstance(document["files"], list):
+        raise PackageBuildError("invalid runtime expected manifest")
+
+    expected: dict[str, str] = {}
+    for entry in document["files"]:
+        if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+            raise PackageBuildError("invalid runtime expected manifest")
+        path = entry["path"]
+        digest = entry["sha256"]
+        if (
+            not isinstance(path, str)
+            or not path.startswith("runtime/")
+            or PurePosixPath(path).as_posix() != path
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or path in expected
+        ):
+            raise PackageBuildError("invalid runtime expected manifest")
+        expected[path] = digest
+    return expected
 
 
-def collect_files(source: Path) -> list[tuple[PurePosixPath, bytes]]:
+def collect_files(
+    source: Path,
+    expected_runtime_manifest: Path = DEFAULT_RUNTIME_EXPECTED_MANIFEST,
+) -> list[tuple[PurePosixPath, bytes]]:
     if not source.is_dir() or source.is_symlink():
         raise PackageBuildError("unsafe package input")
+    expected_runtime = load_expected_runtime(expected_runtime_manifest)
+    expected_paths = ALLOWED_FILES | set(expected_runtime)
+    actual_paths: set[str] = set()
     collected: list[tuple[PurePosixPath, bytes]] = []
+
     for path in sorted(source.rglob("*"), key=lambda item: item.as_posix()):
         if path.is_dir():
             if path.is_symlink():
@@ -209,37 +116,54 @@ def collect_files(source: Path) -> list[tuple[PurePosixPath, bytes]]:
         if path.is_symlink() or not path.is_file():
             raise PackageBuildError("unsafe package input")
         relative = PurePosixPath(path.relative_to(source).as_posix())
+        rendered = relative.as_posix()
         lowered = {part.lower() for part in relative.parts}
         if (
-            not _allowed(relative)
+            (not rendered.startswith("runtime/") and rendered not in ALLOWED_FILES)
             or lowered & FORBIDDEN_NAMES
             or relative.suffix.lower() in FORBIDDEN_SUFFIXES
             or "__pycache__" in lowered
         ):
             raise PackageBuildError("unsafe package input")
         data = path.read_bytes()
+        if rendered in expected_runtime and hashlib.sha256(data).hexdigest() != expected_runtime[rendered]:
+            raise PackageBuildError("runtime file hash does not match expected manifest")
         if any(marker in data for marker in FORBIDDEN_CONTENT):
             raise PackageBuildError("unsafe package input")
+        actual_paths.add(rendered)
         collected.append((relative, data))
-    if not collected:
-        raise PackageBuildError("empty package input")
+
+    actual_runtime = {path for path in actual_paths if path.startswith("runtime/")}
+    if actual_runtime != set(expected_runtime):
+        raise PackageBuildError("runtime file set does not match expected manifest")
+    if actual_paths != expected_paths:
+        raise PackageBuildError("package file set does not match exact allowlist")
     return collected
 
 
-def build(source: Path, output: Path) -> str:
-    files = collect_files(source)
+def build(source: Path, output: Path, expected_runtime_manifest: Path) -> str:
+    files = collect_files(source, expected_runtime_manifest)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.name}.tmp")
     try:
         with zipfile.ZipFile(
-            temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, strict_timestamps=True
+            temporary,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=9,
+            strict_timestamps=True,
         ) as archive:
             for relative, data in files:
                 info = zipfile.ZipInfo(relative.as_posix(), ZIP_TIMESTAMP)
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.create_system = 3
                 info.external_attr = (stat.S_IFREG | 0o644) << 16
-                archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+                archive.writestr(
+                    info,
+                    data,
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
@@ -258,9 +182,14 @@ def main() -> int:
         type=Path,
         default=Path("dist/IdenGrid-Edge-Windows-Server-2025-x64.zip"),
     )
+    parser.add_argument(
+        "--expected-runtime-manifest",
+        type=Path,
+        default=DEFAULT_RUNTIME_EXPECTED_MANIFEST,
+    )
     args = parser.parse_args()
     try:
-        print(build(args.source, args.output))
+        print(build(args.source, args.output, args.expected_runtime_manifest))
     except (OSError, PackageBuildError):
         print("error: unsafe Windows Edge package input", file=sys.stderr)
         return 2

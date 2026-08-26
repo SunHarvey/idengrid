@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib.util
 import json
 import re
@@ -28,6 +29,7 @@ class WindowsEdgeContracts(unittest.TestCase):
             "manifests/windows-x64-runtime.schema.json",
             "manifests/windows-x64-runtime.json",
             "manifests/windows-x64-runtime.example.json",
+            "manifests/windows-x64-runtime-expected.json",
             "scripts/Build-WindowsEdge.ps1",
             "scripts/Install-IdenGridEdge.ps1",
             "scripts/Upgrade-IdenGridEdge.ps1",
@@ -415,6 +417,60 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("@('current','previous')", uninstall)
         self.assertIn("ProgramData cannot contain reparse points", uninstall)
         self.assertIn("Assert-ServiceAbsent", uninstall)
+
+    def test_zip_prescans_use_final_windows_path_identity(self) -> None:
+        for name in (
+            "Install-IdenGridEdge.ps1",
+            "Upgrade-IdenGridEdge.ps1",
+            "Build-WindowsEdge.ps1",
+        ):
+            text = self.text("scripts/" + name)
+            self.assertIn("$name.Contains('//')", text, name)
+            self.assertIn("$targetIdentity=$target.Normalize", text, name)
+            self.assertIn("$targetIdentities.Add($targetIdentity)", text, name)
+            for reserved in ("CONIN\\$", "CONOUT\\$", "CLOCK\\$", "¹", "²", "³"):
+                self.assertIn(reserved, text, name)
+
+    def test_install_rollback_checks_both_fixed_services_before_binary_deletion(self) -> None:
+        install = self.text("scripts/Install-IdenGridEdge.ps1")
+        rollback = install[
+            install.index("function Invoke-InstallRollback") : install.index("function Wait-EdgeHealth")
+        ]
+        edge_check = rollback.index("Assert-ServiceAbsent 'IdenGridEdge'")
+        gateway_check = rollback.index("Assert-ServiceAbsent 'IdenGridEdgeGateway'")
+        first_binary_delete = min(
+            rollback.index("Remove-Item -LiteralPath $versionRoot"),
+            rollback.index("Remove-Item -LiteralPath $ProgramRoot"),
+        )
+        self.assertLess(edge_check, first_binary_delete)
+        self.assertLess(gateway_check, first_binary_delete)
+        assert_absent = install[
+            install.index("function Assert-ServiceAbsent") : install.index(
+                "function Invoke-InstallRollback"
+            )
+        ]
+        self.assertIn("Get-CimInstance Win32_Service", assert_absent)
+        self.assertIn("-ErrorAction Stop", assert_absent)
+
+    def test_runtime_expected_manifest_is_an_exact_hashed_file_set(self) -> None:
+        expected_path = ROOT / "manifests/windows-x64-runtime-expected.json"
+        manifest = json.loads(expected_path.read_text(encoding="utf-8"))
+        self.assertEqual(1, manifest["schema_version"])
+        self.assertEqual({"schema_version", "files"}, set(manifest))
+        self.assertGreater(len(manifest["files"]), 100)
+        paths = [entry["path"] for entry in manifest["files"]]
+        self.assertEqual(sorted(paths), paths)
+        self.assertEqual(len(paths), len(set(paths)))
+        for entry in manifest["files"]:
+            self.assertEqual({"path", "sha256"}, set(entry))
+            self.assertTrue(entry["path"].startswith("runtime/"))
+            self.assertRegex(entry["sha256"], r"^[0-9a-f]{64}$")
+
+        build = self.text("scripts/Build-WindowsEdge.ps1")
+        self.assertIn("windows-x64-runtime-expected.json", build)
+        self.assertIn("ApprovedRuntimeExpectedManifestSha256", build)
+        self.assertIn("--expected-runtime-manifest", build)
+        self.assertIn(hashlib.sha256(expected_path.read_bytes()).hexdigest(), build)
 
     def test_examples_have_no_production_values_or_secrets(self) -> None:
         text_suffixes = {".md", ".json", ".ps1", ".xml", ".template"}
