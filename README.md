@@ -1,5 +1,7 @@
 # IdenGrid · 澜序
 
+[中文](README.md) | [English](README_EN.md)
+
 **跨平台浏览器工作空间，提供独立环境与受控固定出口。**
 
 **环境独立，协作从容。**
