@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
 
+import cloudbrowser.app as app_module
 from cloudbrowser.app import create_app
 from cloudbrowser.models import AuditEvent, EdgeNode, NodeEnrollment
 from cloudbrowser.runner import FakeBrowserRunner
@@ -190,6 +191,30 @@ def test_claim_is_one_time_bound_and_returns_secrets_once(system):
         assert item.report_token_hash == hashlib.sha256(result["report_token"].encode()).hexdigest()
         assert result["report_token"] not in repr(vars(item))
         assert result["edge_ticket_secret"] == node.shared_secret
+
+
+def test_package_verification_failure_does_not_consume_legacy_linux_claim(
+    system, tmp_path, monkeypatch
+):
+    client, _ = system
+    package = tmp_path / "edge-tunnel.tar.gz"
+    package.write_bytes(b"tampered-package")
+    package.with_suffix(package.suffix + ".sha256").write_text(
+        f"{'0' * 64}  {package.name}\n", encoding="ascii"
+    )
+    monkeypatch.setattr(app_module, "LINUX_EDGE_PACKAGE_PATH", package)
+    created = create_enrollment(client, login(client)).json()
+
+    response = claim(client, created["enrollment_token"])
+
+    assert response.status_code == 503
+    with client.app.state.db() as db:
+        enrollment = db.get(NodeEnrollment, created["id"])
+        assert enrollment.status == "pending"
+        assert enrollment.claimed_at is None
+        assert enrollment.token_hash == hashlib.sha256(
+            created["enrollment_token"].encode()
+        ).hexdigest()
 
 
 def test_claim_rejects_wrong_node_ip_id_expiry_and_revoke_uniformly(system):

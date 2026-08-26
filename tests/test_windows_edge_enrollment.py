@@ -93,6 +93,32 @@ def _approved_windows_request(client):
     return created
 
 
+def _approved_linux_request(client):
+    private, public_pem = key_material()
+    response = register(
+        client,
+        public_pem,
+        platform="linux",
+        os_name="Ubuntu 24.04",
+        reported_hostname="linux-edge",
+    )
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert prove(client, created, private).status_code == 200
+    accepted = client.post(
+        f"/api/admin/node-registration-requests/{created['request_id']}/accept",
+        headers=admin_auth(client),
+        json={
+            "node_name": "edge-linux-01",
+            "endpoint": "https://edge-linux-01.example.com",
+            "expected_public_ipv4": "8.8.8.8",
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    created["_private"] = private
+    return created
+
+
 def configure_signed_release(tmp_path: Path, monkeypatch, version: str = "1.2.3"):
     package = tmp_path / f"IdenGrid-Edge-Windows-Server-2025-x64-v{version}.zip"
     package.write_bytes(b"signed-versioned-package")
@@ -128,6 +154,17 @@ def configure_signed_release(tmp_path: Path, monkeypatch, version: str = "1.2.3"
         app_module, "WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64", base64.b64encode(public_key).decode()
     )
     return package, digest, manifest, signature
+
+
+def configure_linux_release(tmp_path: Path, monkeypatch, content: bytes):
+    package = tmp_path / "edge-tunnel.tar.gz"
+    package.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    package.with_suffix(package.suffix + ".sha256").write_text(
+        f"{digest}  {package.name}\n", encoding="ascii"
+    )
+    monkeypatch.setattr(app_module, "LINUX_EDGE_PACKAGE_PATH", package)
+    return package, digest
 
 
 def test_windows_signed_release_routes_and_security_headers(
@@ -166,6 +203,29 @@ def test_windows_release_manifest_rejects_duplicate_json_keys(
             f'"size":{package.stat().st_size},"version":"1.2.3"}}}}'
         ).encode("ascii")
     )
+    signing_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    signature.write_text(
+        base64.b64encode(signing_key.sign(manifest.read_bytes())).decode("ascii") + "\n",
+        encoding="ascii",
+    )
+
+    assert registration_system.get("/edge-package/release-manifest.json").status_code == 503
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("schema_version", True), ("size", True)],
+)
+def test_windows_release_manifest_rejects_boolean_integer_fields(
+    registration_system, tmp_path: Path, monkeypatch, field: str, value: bool
+):
+    _, _, manifest, signature = configure_signed_release(tmp_path, monkeypatch)
+    document = json.loads(manifest.read_text(encoding="ascii"))
+    if field == "schema_version":
+        document[field] = value
+    else:
+        document["package"][field] = value
+    manifest.write_text(json.dumps(document, separators=(",", ":")), encoding="ascii")
     signing_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     signature.write_text(
         base64.b64encode(signing_key.sign(manifest.read_bytes())).decode("ascii") + "\n",
@@ -328,6 +388,104 @@ def test_verified_edge_package_rejects_unknown_platform_explicitly():
         raise AssertionError("unknown platform must fail closed")
 
 
+def test_linux_large_package_is_hashed_in_bounded_chunks_and_descriptor_is_closed(
+    tmp_path: Path, monkeypatch
+):
+    content = bytes(range(251)) * 10_000
+    package, digest = configure_linux_release(tmp_path, monkeypatch, content)
+    original_read_bytes = Path.read_bytes
+    real_open = os.open
+    real_read = os.read
+    real_close = os.close
+    package_descriptors = set()
+    closed_descriptors = set()
+    requested_sizes = []
+
+    def reject_package_read(path: Path):
+        if path == package:
+            raise AssertionError("Linux package was read into one bytes object")
+        return original_read_bytes(path)
+
+    def recording_open(path, flags, *args):
+        descriptor = real_open(path, flags, *args)
+        if Path(path) == package:
+            package_descriptors.add(descriptor)
+        return descriptor
+
+    def recording_read(descriptor: int, size: int):
+        if descriptor in package_descriptors:
+            requested_sizes.append(size)
+        return real_read(descriptor, size)
+
+    def recording_close(descriptor: int):
+        if descriptor in package_descriptors:
+            closed_descriptors.add(descriptor)
+        return real_close(descriptor)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_package_read)
+    monkeypatch.setattr(app_module.os, "open", recording_open)
+    monkeypatch.setattr(app_module.os, "read", recording_read)
+    monkeypatch.setattr(app_module.os, "close", recording_close)
+
+    assert app_module.verified_edge_package("linux") == (
+        digest,
+        app_module.LINUX_EDGE_PACKAGE_ROUTE,
+    )
+    assert package_descriptors
+    assert package_descriptors == closed_descriptors
+    assert requested_sizes
+    assert max(requested_sizes) <= app_module.WINDOWS_EDGE_STREAM_CHUNK_BYTES
+
+
+def test_linux_package_response_streams_verified_descriptor_after_path_replacement_and_closes_it(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    verified_bytes = b"verified-linux-package"
+    package, _ = configure_linux_release(tmp_path, monkeypatch, verified_bytes)
+    replacement = tmp_path / "replacement.tar.gz"
+    replacement_bytes = b"different-unverified-linux-package"
+    replacement.write_bytes(replacement_bytes)
+    real_sha256 = hashlib.sha256
+    real_open = os.open
+    real_close = os.close
+    package_descriptors = set()
+    closed_descriptors = set()
+
+    class ReplacingDigest:
+        def __init__(self, *args, **kwargs):
+            self.inner = real_sha256(*args, **kwargs)
+
+        def update(self, data):
+            self.inner.update(data)
+
+        def hexdigest(self):
+            result = self.inner.hexdigest()
+            os.replace(replacement, package)
+            return result
+
+    def recording_open(path, flags, *args):
+        descriptor = real_open(path, flags, *args)
+        if Path(path) == package:
+            package_descriptors.add(descriptor)
+        return descriptor
+
+    def recording_close(descriptor: int):
+        if descriptor in package_descriptors:
+            closed_descriptors.add(descriptor)
+        return real_close(descriptor)
+
+    monkeypatch.setattr(app_module.hashlib, "sha256", ReplacingDigest)
+    monkeypatch.setattr(app_module.os, "open", recording_open)
+    monkeypatch.setattr(app_module.os, "close", recording_close)
+
+    response = registration_system.get(app_module.LINUX_EDGE_PACKAGE_ROUTE)
+
+    assert response.status_code == 200
+    assert response.content == verified_bytes
+    assert package.read_bytes() == replacement_bytes
+    assert package_descriptors == closed_descriptors
+
+
 def test_windows_claim_streams_package_hash_and_closes_descriptor(
     registration_system, tmp_path: Path, monkeypatch
 ):
@@ -378,6 +536,47 @@ def test_mismatched_windows_package_does_not_consume_claim(
     )
 
     assert response.status_code == 503
+    with registration_system.app.state.db() as db:
+        item = db.get(NodeRegistrationRequest, created["request_id"])
+        assert item.status == "approved"
+        assert item.registration_token_hash is not None
+        assert item.challenge_hash is not None
+
+
+def test_mismatched_linux_package_does_not_consume_registration_claim(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    package, _ = configure_linux_release(tmp_path, monkeypatch, b"verified-linux-package")
+    package.write_bytes(b"tampered-linux-package")
+    created = _approved_linux_request(registration_system)
+    real_open = os.open
+    real_close = os.close
+    package_descriptors = set()
+    closed_descriptors = set()
+
+    def recording_open(path, flags, *args):
+        descriptor = real_open(path, flags, *args)
+        if Path(path) == package:
+            package_descriptors.add(descriptor)
+        return descriptor
+
+    def recording_close(descriptor: int):
+        if descriptor in package_descriptors:
+            closed_descriptors.add(descriptor)
+        return real_close(descriptor)
+
+    monkeypatch.setattr(app_module.os, "open", recording_open)
+    monkeypatch.setattr(app_module.os, "close", recording_close)
+
+    response = registration_system.post(
+        f"/api/node-registration-requests/{created['request_id']}/claim-approved",
+        headers=registration_auth(created),
+        json=claim_body(registration_system, created, created["_private"]),
+    )
+
+    assert response.status_code == 503
+    assert package_descriptors
+    assert package_descriptors == closed_descriptors
     with registration_system.app.state.db() as db:
         item = db.get(NodeRegistrationRequest, created["request_id"])
         assert item.status == "approved"

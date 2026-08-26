@@ -103,6 +103,7 @@ WINDOWS_EDGE_RELEASE_MANIFEST_PATH = Path("/data/dist/release-manifest.json")
 WINDOWS_EDGE_RELEASE_SIGNATURE_PATH = Path("/data/dist/release-manifest.json.sig")
 WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64 = "Wf/s6zRs0+FjSCqM1BQb5vXIpyv4Ivxm5nAS2wWZGxk="
 LINUX_EDGE_PACKAGE_ROUTE = "/edge-package/edge-tunnel.tar.gz"
+LINUX_EDGE_PACKAGE_MAX_BYTES = 2 * 1024**3
 WINDOWS_EDGE_PACKAGE_MAX_BYTES = 8 * 1024**3
 WINDOWS_EDGE_STREAM_CHUNK_BYTES = 1024 * 1024
 
@@ -159,6 +160,7 @@ def verified_windows_release() -> WindowsRelease:
         package = document["package"]
         if (
             set(document) != {"schema_version", "package"}
+            or type(document["schema_version"]) is not int
             or document["schema_version"] != 1
             or set(package) != {"filename", "sha256", "size", "version"}
             or not isinstance(package["filename"], str)
@@ -232,6 +234,40 @@ def _stream_descriptor(descriptor: int) -> Generator[bytes]:
         os.close(descriptor)
 
 
+def _open_verified_linux_package() -> tuple[int, str, int]:
+    checksum_path = LINUX_EDGE_PACKAGE_PATH.with_suffix(LINUX_EDGE_PACKAGE_PATH.suffix + ".sha256")
+    descriptor = -1
+    try:
+        expected, filename = checksum_path.read_text(encoding="ascii").split()
+        if (
+            len(expected) != 64
+            or any(character not in "0123456789abcdef" for character in expected)
+            or filename != LINUX_EDGE_PACKAGE_PATH.name
+        ):
+            raise ValueError("invalid Linux package checksum")
+        descriptor = os.open(
+            LINUX_EDGE_PACKAGE_PATH, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+        )
+        file_stat = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(file_stat.st_mode)
+            or not 0 < file_stat.st_size <= LINUX_EDGE_PACKAGE_MAX_BYTES
+        ):
+            raise ValueError("invalid Linux package")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, WINDOWS_EDGE_STREAM_CHUNK_BYTES):
+            digest.update(chunk)
+        actual = digest.hexdigest()
+        if not hmac.compare_digest(expected, actual):
+            raise ValueError("invalid Linux package")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor, actual, file_stat.st_size
+    except (OSError, UnicodeError, ValueError):
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
+
+
 def verified_edge_package(platform: str) -> tuple[str, str]:
     if platform == "windows":
         release = verified_windows_release()
@@ -240,18 +276,8 @@ def verified_edge_package(platform: str) -> tuple[str, str]:
         return release.checksum, release.route
     if platform != "linux":
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
-    checksum_path = LINUX_EDGE_PACKAGE_PATH.with_suffix(LINUX_EDGE_PACKAGE_PATH.suffix + ".sha256")
-    try:
-        expected, filename = checksum_path.read_text(encoding="ascii").split()
-        actual = hashlib.sha256(LINUX_EDGE_PACKAGE_PATH.read_bytes()).hexdigest()
-    except (OSError, UnicodeError, ValueError):
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
-    if (
-        len(expected) != 64
-        or filename != LINUX_EDGE_PACKAGE_PATH.name
-        or not hmac.compare_digest(expected, actual)
-    ):
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
+    descriptor, actual, _ = _open_verified_linux_package()
+    os.close(descriptor)
     return actual, LINUX_EDGE_PACKAGE_ROUTE
 
 
@@ -837,11 +863,15 @@ def create_app(
 
     @app.get("/edge-package/edge-tunnel.tar.gz")
     def edge_package():
-        verified_edge_package("linux")
-        return FileResponse(
-            LINUX_EDGE_PACKAGE_PATH,
+        descriptor, _, size = _open_verified_linux_package()
+        return StreamingResponse(
+            _stream_descriptor(descriptor),
             media_type="application/gzip",
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Length": str(size),
+            },
         )
 
     @app.get("/bootstrap/Install-IdenGridEdge.ps1")
