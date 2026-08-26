@@ -1,37 +1,38 @@
 # IdenGrid · 澜序
 
-**Cross-platform browser workspaces with isolated profiles and managed fixed egress.**
+**跨平台浏览器工作空间，提供独立环境与受控固定出口。**
+
 **环境独立，协作从容。**
 
-IdenGrid is a source-available platform for managing isolated browser workspaces across macOS and Windows. Each workspace keeps an independent browser profile, local agent, lease, and authorized Edge route.
+IdenGrid（澜序）用于在 macOS 和 Windows 上管理相互隔离的浏览器工作空间。每个工作空间拥有独立的浏览器 Profile、本地 Agent、连接租约和经过授权的 Edge 出口。
 
-## Architecture
+## 架构
 
 ```text
-macOS / Windows client
-  → local Chromium profile
-  → loopback SOCKS
-  → per-workspace Rust Agent
-  → authenticated WSS
-  → authorized Edge
-  → fixed egress
+macOS／Windows 客户端
+  → 本地 Chromium 独立 Profile
+  → 本机回环 SOCKS
+  → 每个工作空间独立的 Rust Agent
+  → 经过认证的 WSS 通道
+  → 管理员授权的 Edge 节点
+  → 固定公网出口
 ```
 
-The control plane manages users, devices, workspace authorization, leases, one-time tickets, audits, and Edge health. Browser profiles and cookies remain on each device.
+控制端负责用户、设备、工作空间授权、连接租约、一次性票据、审计和 Edge 健康状态。浏览器 Profile、Cookie 和本地浏览数据保留在用户设备上，不在不同设备之间共享同一份 Profile。
 
-## Components
+## 主要组件
 
-- `cloudbrowser/` — FastAPI control plane
-- `edge-tunnel/` — authenticated Python/aiohttp Edge relay
-- `native-client/agent-rs/` — cross-platform Rust Agent
-- `native-client/macos/` — Apple Silicon SwiftUI client
-- `windows-client/` — Windows 11 x86-64 .NET/WPF client
-- `config/` — public configuration templates
-- `tests/` — control-plane and contract tests
+- `cloudbrowser/`：FastAPI 控制端
+- `edge-tunnel/`：基于 Python／aiohttp 的认证 Edge 转发服务
+- `native-client/agent-rs/`：跨平台 Rust Agent
+- `native-client/macos/`：Apple Silicon SwiftUI 客户端
+- `windows-client/`：Windows 11 x86-64 .NET／WPF 客户端
+- `config/`：公开配置模板
+- `tests/`：控制端及客户端契约测试
 
-## Configuration
+## 配置方式
 
-Production infrastructure is never hard-coded in source. Start from:
+生产环境的域名、数据库连接、节点地址和凭据均不写死在源码中。部署时从以下示例文件创建实际配置：
 
 ```text
 config/control.env.example
@@ -41,11 +42,11 @@ config/local-environment.example.json
 config/client.example.json
 ```
 
-Critical production values must be supplied through protected deployment configuration. Client API origins are injected at build time into signed application resources.
+真实生产配置必须保存在受保护的部署文件中。Mac 和 Windows 客户端使用的控制端地址在构建时注入应用资源，不提供源码内的生产地址回退。
 
-## Development
+## 本地开发与验证
 
-### Control plane
+### 控制端
 
 ```bash
 uv sync --dev
@@ -62,43 +63,63 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
-### macOS static contracts
+### macOS 客户端
+
+静态契约测试：
 
 ```bash
 pytest -q native-client/macos/Tests/Static
 ```
 
-Apple Silicon builds require macOS Command Line Tools and the release scripts under `native-client/release/scripts/`. Set `IDENGRID_API_BASE_URL` (and, for signed updates, `IDENGRID_UPDATE_FEED_URL`) before running the build script; the values are embedded into signed application resources.
+Apple Silicon 构建需要 macOS Command Line Tools，以及 `native-client/release/scripts/` 中的构建脚本。构建前设置：
 
-### Windows static contracts
+```bash
+export IDENGRID_API_BASE_URL="https://api.example.com/"
+```
+
+如需签名更新，还需要设置 `IDENGRID_UPDATE_FEED_URL`。这些值会在构建时写入应用资源。
+
+### Windows 客户端
+
+静态契约测试：
 
 ```bash
 pytest -q windows-client/tests/Static
 ```
 
-A full WPF build requires Windows and .NET 10:
+完整 WPF 构建需要 Windows 和 .NET 10：
 
 ```powershell
 $env:IDENGRID_API_BASE_URL = "https://api.example.com/"
 .\windows-client\Build-IdenGrid-Windows.ps1
 ```
 
-The build script validates the HTTPS origin and embeds a temporary configuration resource without modifying the repository template.
+构建脚本会验证 HTTPS 地址，并通过临时配置资源完成注入，不修改仓库中的示例配置。
 
-## Security Principles
+## 安全原则
 
-- Fail closed when route, identity, capacity, ticket, or egress validation fails.
-- Never place tokens or credentials in command-line arguments or logs.
-- Keep profiles, cookies, agents, control channels, and leases isolated per device and workspace.
-- Allow users to connect only to administrator-authorized Edge nodes.
-- Do not persist page content, cookies, passwords, or HTTPS URL paths in audits.
+- 路由、身份、容量、票据或出口验证失败时统一 Fail Closed
+- Token 和凭据不得出现在命令行参数或日志中
+- 每台设备、每个工作空间分别维护 Profile、Cookie、Agent、控制通道和租约
+- 普通用户只能连接管理员授权的 Edge 节点
+- 审计不记录页面内容、Cookie、密码或 HTTPS URL 路径
+- 节点异常时不得回退本机公网或自动切换到未授权出口
 
-See [SECURITY.md](SECURITY.md) for reporting guidance.
+安全问题报告方式请参阅 [SECURITY.md](SECURITY.md)。
 
-## License
+## 授权
 
-Source Available · Free for Non-Commercial Use.
+本项目采用源码可见的非商业授权模式：
 
-Non-commercial use is permitted under the [IdenGrid Community License](LICENSE). Commercial use requires a separate written license; see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Brand assets are governed by [TRADEMARKS.md](TRADEMARKS.md).
+- 非商业用途可以免费使用
+- 修改版对外分发或通过网络提供服务时，必须公开对应源码
+- 任何商业使用都必须取得版权方的书面商业授权
+- IdenGrid、澜序、Logo 和其他品牌资产不包含在代码授权中
 
-This license is not represented as OSI-approved open source.
+完整条款请参阅：
+
+- [IdenGrid Community License](LICENSE)
+- [商业授权说明](COMMERCIAL-LICENSE.md)
+- [品牌与商标说明](TRADEMARKS.md)
+
+该许可证不属于 OSI 批准的开源许可证。
