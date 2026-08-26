@@ -402,8 +402,8 @@ try {
     $caddyText = (Get-Content -LiteralPath (Join-Path $versionRoot 'templates\Caddyfile.template') -Raw).Replace('{{EDGE_HOSTNAME}}',$Hostname.ToLowerInvariant())
     Set-Content -LiteralPath (Join-Path $ProgramDataRoot 'caddy\Caddyfile') -Value $caddyText -Encoding UTF8
     Invoke-Icacls -Path (Join-Path $ProgramDataRoot 'caddy') -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-20:(OI)(CI)M')
-    Invoke-Icacls -Path (Join-Path $ProgramDataRoot 'logs\edge') -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)M')
-    Invoke-Icacls -Path (Join-Path $ProgramDataRoot 'logs\gateway') -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-20:(OI)(CI)M')
+    Invoke-Icacls -Path (Join-Path $ProgramDataRoot 'logs\edge') -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-19:(OI)(CI)M','*S-1-5-32-544:(OI)(CI)R')
+    Invoke-Icacls -Path (Join-Path $ProgramDataRoot 'logs\gateway') -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-20:(OI)(CI)M','*S-1-5-32-544:(OI)(CI)R')
 
     Set-Junction (Join-Path $ProgramRoot 'current') $versionRoot
     $currentJunctionCreated = $true
