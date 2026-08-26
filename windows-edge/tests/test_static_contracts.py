@@ -199,6 +199,9 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertNotIn("ExtractToDirectory", build)
         self.assertIn("$ApprovedRuntimeManifestSha256", build)
         self.assertIn("Runtime manifest is not on the production allowlist", build)
+        parameter_block = build.split("Set-StrictMode", 1)[0]
+        self.assertNotIn("$PSScriptRoot", parameter_block)
+        self.assertIn("$MyInvocation.MyCommand.Path", build)
 
     def test_firewall_uninstall_and_transaction_contracts(self) -> None:
         install = self.text("scripts/Install-IdenGridEdge.ps1")

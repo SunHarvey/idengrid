@@ -2,12 +2,16 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$')][string]$Version,
-    [string]$ManifestPath = (Join-Path $PSScriptRoot '..\manifests\windows-x64-runtime.json'),
-    [string]$SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\dist')
+    [string]$ManifestPath,
+    [string]$SourceRoot,
+    [string]$OutputDirectory
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($ManifestPath)) { $ManifestPath = Join-Path $ScriptRoot '..\manifests\windows-x64-runtime.json' }
+if ([string]::IsNullOrWhiteSpace($SourceRoot)) { $SourceRoot = (Resolve-Path (Join-Path $ScriptRoot '..\..')).Path }
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = Join-Path $ScriptRoot '..\dist' }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.Net.Http

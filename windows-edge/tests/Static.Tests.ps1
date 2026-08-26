@@ -1,8 +1,10 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([string]$Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path)
+param([string]$Root)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($Root)) { $Root = (Resolve-Path (Join-Path $ScriptRoot '..')).Path }
 $failures = New-Object System.Collections.Generic.List[string]
 function Assert-True([bool]$Condition,[string]$Message) { if (-not $Condition) { $failures.Add($Message) } }
 function Read-Utf8([string]$Relative) { return [IO.File]::ReadAllText((Join-Path $Root $Relative),[Text.Encoding]::UTF8) }
