@@ -26,7 +26,10 @@ $FirewallDescription = 'Managed exclusively by IdenGrid Edge'
 $reportToken = $null
 $formalInstall = $PSCmdlet.ParameterSetName -eq 'Server'
 $currentPhase = 'installing'
+$programRootExisted = Test-Path -LiteralPath $ProgramRoot
 $programDataExisted = Test-Path -LiteralPath $ProgramDataRoot
+$idengridDataRoot = Split-Path $ProgramDataRoot -Parent
+$idengridDataRootExisted = Test-Path -LiteralPath $idengridDataRoot
 $versionRoot = $null
 $edgeWrapper = $null
 $gatewayWrapper = $null
@@ -260,6 +263,15 @@ function Invoke-InstallRollback {
             Remove-Item -LiteralPath $ProgramDataRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
         if ($programDataExisted) { Restore-ProgramDataBackup }
+        if (-not $programRootExisted -and (Test-Path -LiteralPath $ProgramRoot)) {
+            Remove-Item -LiteralPath $ProgramRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $idengridDataRootExisted -and (Test-Path -LiteralPath $idengridDataRoot)) {
+            $remaining = @(Get-ChildItem -LiteralPath $idengridDataRoot -Force -ErrorAction SilentlyContinue)
+            if ($remaining.Count -eq 0) {
+                Remove-Item -LiteralPath $idengridDataRoot -Force -ErrorAction SilentlyContinue
+            }
+        }
     } finally {
         $ErrorActionPreference = $previousErrorAction
     }
@@ -364,7 +376,6 @@ try {
     Move-Item -LiteralPath $expanded -Destination $versionRoot
     $dirs = @('config','caddy','caddy\data','caddy\config','logs\edge','logs\gateway','registration','state')
     foreach ($dir in $dirs) { New-Item -ItemType Directory -Path (Join-Path $ProgramDataRoot $dir) -Force | Out-Null }
-    $idengridDataRoot = Split-Path $ProgramDataRoot -Parent
     foreach ($managedDataRoot in @($idengridDataRoot,$ProgramDataRoot)) {
         Invoke-Icacls -Path $managedDataRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
     }

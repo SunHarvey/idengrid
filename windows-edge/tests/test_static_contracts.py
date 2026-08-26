@@ -232,6 +232,9 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("$idengridDataRoot", install)
         self.assertIn("$managedDataRoot", install)
         self.assertGreaterEqual(install.count("*S-1-5-32-544:(OI)(CI)R"), 2)
+        self.assertIn("$programRootExisted", install)
+        self.assertIn("$idengridDataRootExisted", install)
+        self.assertIn("$remaining.Count -eq 0", install)
 
     def test_config_owner_and_claim_closed_shape_match_runtime(self) -> None:
         install = self.text("scripts/Install-IdenGridEdge.ps1")
