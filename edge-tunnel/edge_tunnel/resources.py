@@ -24,10 +24,13 @@ class LinuxResourceProvider:
         self,
         *,
         read_text: Callable[[str], str] | None = None,
-        statvfs: Callable[[str], Any] = os.statvfs,
+        statvfs: Callable[[str], Any] | None = None,
     ) -> None:
         self._read_text = read_text or (lambda path: Path(path).read_text())
-        self._statvfs = statvfs
+        selected_statvfs = statvfs or getattr(os, "statvfs", None)
+        if selected_statvfs is None:
+            raise RuntimeError("Linux resource APIs are unavailable")
+        self._statvfs = selected_statvfs
 
     def __call__(self) -> dict[str, int | float]:
         memory = {}

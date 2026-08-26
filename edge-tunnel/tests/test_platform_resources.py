@@ -1,5 +1,7 @@
+import importlib
 from types import SimpleNamespace
 
+from edge_tunnel import resources
 from edge_tunnel.resources import (
     LinuxResourceProvider,
     WindowsResourceProvider,
@@ -67,6 +69,19 @@ def test_resource_provider_factory_selects_windows_with_injected_metrics():
 
     assert isinstance(provider, WindowsResourceProvider)
     assert provider._psutil is fake_psutil
+
+
+def test_module_import_and_windows_factory_do_not_require_linux_statvfs(monkeypatch):
+    try:
+        with monkeypatch.context() as isolated:
+            isolated.delattr(resources.os, "statvfs")
+            reloaded = importlib.reload(resources)
+            provider = reloaded.create_resource_provider(
+                system="Windows", psutil_module=SimpleNamespace()
+            )
+            assert isinstance(provider, reloaded.WindowsResourceProvider)
+    finally:
+        importlib.reload(resources)
 
 
 def test_resource_provider_factory_rejects_unsupported_platform():
