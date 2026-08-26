@@ -7,11 +7,14 @@ import hmac
 import io
 import ipaddress
 import json
+import os
 import re
 import secrets
 import shlex
+import stat as stat_module
 import uuid
 from collections.abc import Callable, Generator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -35,7 +38,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from itsdangerous import BadSignature, URLSafeSerializer
 from pydantic import BaseModel, Field
 from sqlalchemy import inspect, select, text, update
@@ -100,14 +103,49 @@ WINDOWS_EDGE_RELEASE_MANIFEST_PATH = Path("/data/dist/release-manifest.json")
 WINDOWS_EDGE_RELEASE_SIGNATURE_PATH = Path("/data/dist/release-manifest.json.sig")
 WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64 = "Wf/s6zRs0+FjSCqM1BQb5vXIpyv4Ivxm5nAS2wWZGxk="
 LINUX_EDGE_PACKAGE_ROUTE = "/edge-package/edge-tunnel.tar.gz"
+WINDOWS_EDGE_PACKAGE_MAX_BYTES = 8 * 1024**3
+WINDOWS_EDGE_STREAM_CHUNK_BYTES = 1024 * 1024
 
 
-def verified_windows_release() -> tuple[Path, str, str]:
+@dataclass(frozen=True)
+class WindowsRelease:
+    package_path: Path
+    checksum: str
+    route: str
+    size: int
+    manifest_raw: bytes
+    signature_raw: bytes
+
+
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _read_small_regular_file(path: Path, limit: int) -> bytes:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
     try:
-        manifest_raw = WINDOWS_EDGE_RELEASE_MANIFEST_PATH.read_bytes()
-        if len(manifest_raw) > 4096:
-            raise ValueError("invalid release manifest")
-        signature_text = WINDOWS_EDGE_RELEASE_SIGNATURE_PATH.read_text(encoding="ascii").strip()
+        file_stat = os.fstat(descriptor)
+        if not stat_module.S_ISREG(file_stat.st_mode) or not 0 <= file_stat.st_size <= limit:
+            raise ValueError("invalid release metadata")
+        data = os.read(descriptor, limit + 1)
+        if len(data) != file_stat.st_size:
+            raise ValueError("invalid release metadata")
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def verified_windows_release() -> WindowsRelease:
+    try:
+        manifest_raw = _read_small_regular_file(WINDOWS_EDGE_RELEASE_MANIFEST_PATH, 4096)
+        signature_raw = _read_small_regular_file(WINDOWS_EDGE_RELEASE_SIGNATURE_PATH, 256)
+        signature_text = signature_raw.decode("ascii").strip()
         signature = base64.b64decode(signature_text, validate=True)
         public_key_raw = base64.b64decode(
             WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64, validate=True
@@ -115,7 +153,9 @@ def verified_windows_release() -> tuple[Path, str, str]:
         if len(signature) != 64 or len(public_key_raw) != 32:
             raise ValueError("invalid release signature")
         Ed25519PublicKey.from_public_bytes(public_key_raw).verify(signature, manifest_raw)
-        document = json.loads(manifest_raw.decode("ascii"))
+        document = json.loads(
+            manifest_raw.decode("ascii"), object_pairs_hook=_strict_json_object
+        )
         package = document["package"]
         if (
             set(document) != {"schema_version", "package"}
@@ -129,7 +169,7 @@ def verified_windows_release() -> tuple[Path, str, str]:
             or len(package["sha256"]) != 64
             or any(character not in "0123456789abcdef" for character in package["sha256"])
             or type(package["size"]) is not int
-            or not 0 < package["size"] <= 8 * 1024**3
+            or not 0 < package["size"] <= WINDOWS_EDGE_PACKAGE_MAX_BYTES
             or not isinstance(package["version"], str)
             or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", package["version"])
             is None
@@ -138,7 +178,6 @@ def verified_windows_release() -> tuple[Path, str, str]:
         ):
             raise ValueError("invalid release manifest")
         package_path = WINDOWS_EDGE_RELEASE_MANIFEST_PATH.parent / package["filename"]
-        data = package_path.read_bytes()
     except (
         InvalidSignature,
         OSError,
@@ -149,16 +188,56 @@ def verified_windows_release() -> tuple[Path, str, str]:
         json.JSONDecodeError,
     ):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
-    actual = hashlib.sha256(data).hexdigest()
-    if len(data) != package["size"] or not hmac.compare_digest(actual, package["sha256"]):
+    return WindowsRelease(
+        package_path=package_path,
+        checksum=package["sha256"],
+        route=f"/edge-package/{package['filename']}",
+        size=package["size"],
+        manifest_raw=manifest_raw,
+        signature_raw=signature_raw,
+    )
+
+
+def _open_verified_windows_package(release: WindowsRelease) -> int:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            release.package_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+        )
+        file_stat = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(file_stat.st_mode)
+            or file_stat.st_size != release.size
+            or not 0 < file_stat.st_size <= WINDOWS_EDGE_PACKAGE_MAX_BYTES
+        ):
+            raise ValueError("invalid release package")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, WINDOWS_EDGE_STREAM_CHUNK_BYTES):
+            digest.update(chunk)
+        if not hmac.compare_digest(digest.hexdigest(), release.checksum):
+            raise ValueError("invalid release package")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor
+    except (OSError, ValueError):
+        if descriptor >= 0:
+            os.close(descriptor)
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
-    return package_path, actual, f"/edge-package/{package['filename']}"
+
+
+def _stream_descriptor(descriptor: int) -> Generator[bytes]:
+    try:
+        while chunk := os.read(descriptor, WINDOWS_EDGE_STREAM_CHUNK_BYTES):
+            yield chunk
+    finally:
+        os.close(descriptor)
 
 
 def verified_edge_package(platform: str) -> tuple[str, str]:
     if platform == "windows":
-        _, checksum, route = verified_windows_release()
-        return checksum, route
+        release = verified_windows_release()
+        descriptor = _open_verified_windows_package(release)
+        os.close(descriptor)
+        return release.checksum, release.route
     if platform != "linux":
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
     checksum_path = LINUX_EDGE_PACKAGE_PATH.with_suffix(LINUX_EDGE_PACKAGE_PATH.suffix + ".sha256")
@@ -775,31 +854,36 @@ def create_app(
 
     @app.get("/edge-package/release-manifest.json")
     def windows_edge_release_manifest():
-        verified_windows_release()
-        return FileResponse(
-            WINDOWS_EDGE_RELEASE_MANIFEST_PATH,
+        release = verified_windows_release()
+        return Response(
+            content=release.manifest_raw,
             media_type="application/json",
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 
     @app.get("/edge-package/release-manifest.json.sig")
     def windows_edge_release_signature():
-        verified_windows_release()
-        return FileResponse(
-            WINDOWS_EDGE_RELEASE_SIGNATURE_PATH,
+        release = verified_windows_release()
+        return Response(
+            content=release.signature_raw,
             media_type="application/octet-stream",
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 
     @app.get("/edge-package/{filename}")
     def windows_edge_versioned_package(filename: str):
-        package_path, _, route = verified_windows_release()
-        if route != f"/edge-package/{filename}":
+        release = verified_windows_release()
+        if release.route != f"/edge-package/{filename}":
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Release package not found")
-        return FileResponse(
-            package_path,
+        descriptor = _open_verified_windows_package(release)
+        return StreamingResponse(
+            _stream_descriptor(descriptor),
             media_type="application/zip",
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Length": str(release.size),
+            },
         )
 
     @app.get("/healthz")

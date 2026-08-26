@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -154,16 +155,136 @@ def test_windows_signed_release_routes_and_security_headers(
         assert response.headers["x-content-type-options"] == "nosniff"
 
 
-def test_windows_release_routes_fail_closed_for_missing_or_mismatched_package(
+def test_windows_release_manifest_rejects_duplicate_json_keys(
     registration_system, tmp_path: Path, monkeypatch
 ):
-    package, _, manifest, _ = configure_signed_release(tmp_path, monkeypatch)
-    package.unlink()
+    package, digest, manifest, signature = configure_signed_release(tmp_path, monkeypatch)
+    manifest.write_bytes(
+        (
+            '{"schema_version":1,"schema_version":1,"package":'
+            f'{{"filename":"{package.name}","sha256":"{digest}",'
+            f'"size":{package.stat().st_size},"version":"1.2.3"}}}}'
+        ).encode("ascii")
+    )
+    signing_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    signature.write_text(
+        base64.b64encode(signing_key.sign(manifest.read_bytes())).decode("ascii") + "\n",
+        encoding="ascii",
+    )
+
     assert registration_system.get("/edge-package/release-manifest.json").status_code == 503
+
+
+def test_manifest_and_signature_routes_do_not_read_package(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    package, _, manifest, signature = configure_signed_release(tmp_path, monkeypatch)
+    original_read_bytes = Path.read_bytes
+
+    def reject_package_read(path: Path):
+        if path == package:
+            raise AssertionError("metadata route read the package")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_package_read)
+
+    assert registration_system.get("/edge-package/release-manifest.json").content == original_read_bytes(
+        manifest
+    )
+    assert registration_system.get(
+        "/edge-package/release-manifest.json.sig"
+    ).content == original_read_bytes(signature)
+
+
+def test_windows_package_route_fails_closed_for_missing_or_mismatched_package(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    package, _, _, _ = configure_signed_release(tmp_path, monkeypatch)
+    package.unlink()
+    assert registration_system.get(f"/edge-package/{package.name}").status_code == 503
 
     package.write_bytes(b"tampered")
     assert registration_system.get(f"/edge-package/{package.name}").status_code == 503
-    assert manifest.is_file()
+
+
+def test_windows_package_route_rejects_symlink(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    package, _, _, _ = configure_signed_release(tmp_path, monkeypatch)
+    target = tmp_path / "other.zip"
+    package.rename(target)
+    package.symlink_to(target)
+
+    assert registration_system.get(f"/edge-package/{package.name}").status_code == 503
+
+
+def test_windows_package_response_uses_verified_descriptor_after_path_replacement(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    package, _, _, _ = configure_signed_release(tmp_path, monkeypatch)
+    verified_bytes = package.read_bytes()
+    replacement = tmp_path / "replacement.zip"
+    replacement_bytes = b"different-unverified-package"
+    replacement.write_bytes(replacement_bytes)
+    real_sha256 = hashlib.sha256
+
+    class ReplacingDigest:
+        def __init__(self, *args, **kwargs):
+            self.inner = real_sha256(*args, **kwargs)
+
+        def update(self, data):
+            self.inner.update(data)
+
+        def hexdigest(self):
+            result = self.inner.hexdigest()
+            os.replace(replacement, package)
+            return result
+
+    monkeypatch.setattr(app_module.hashlib, "sha256", ReplacingDigest)
+
+    response = registration_system.get(f"/edge-package/{package.name}")
+
+    assert response.status_code == 200
+    assert response.content == verified_bytes
+    assert package.read_bytes() == replacement_bytes
+
+
+def test_windows_large_package_is_hashed_and_sent_in_bounded_chunks(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    package, _, manifest, signature = configure_signed_release(tmp_path, monkeypatch)
+    package_bytes = bytes(range(251)) * 50_000
+    package.write_bytes(package_bytes)
+    document = json.loads(manifest.read_text(encoding="ascii"))
+    document["package"]["sha256"] = hashlib.sha256(package_bytes).hexdigest()
+    document["package"]["size"] = len(package_bytes)
+    manifest.write_text(json.dumps(document, separators=(",", ":")), encoding="ascii")
+    signing_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    signature.write_text(
+        base64.b64encode(signing_key.sign(manifest.read_bytes())).decode("ascii") + "\n",
+        encoding="ascii",
+    )
+    original_read_bytes = Path.read_bytes
+    real_os_read = os.read
+    requested_sizes = []
+
+    def reject_package_read(path: Path):
+        if path == package:
+            raise AssertionError("package was read into one bytes object")
+        return original_read_bytes(path)
+
+    def recording_read(descriptor: int, size: int):
+        requested_sizes.append(size)
+        return real_os_read(descriptor, size)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_package_read)
+    monkeypatch.setattr(app_module.os, "read", recording_read)
+
+    response = registration_system.get(f"/edge-package/{package.name}")
+
+    assert response.status_code == 200
+    assert response.content == package_bytes
+    assert max(requested_sizes) <= app_module.WINDOWS_EDGE_STREAM_CHUNK_BYTES
 
 
 @pytest.mark.parametrize("attack", ["forged", "truncated", "stale"])
@@ -205,6 +326,63 @@ def test_verified_edge_package_rejects_unknown_platform_explicitly():
         assert exc.detail == "Edge package unavailable"
     else:
         raise AssertionError("unknown platform must fail closed")
+
+
+def test_windows_claim_streams_package_hash_and_closes_descriptor(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    package, digest, _, _ = configure_signed_release(tmp_path, monkeypatch)
+    created = _approved_windows_request(registration_system)
+    real_open = os.open
+    real_close = os.close
+    package_descriptors = set()
+    closed_descriptors = set()
+
+    def recording_open(path, flags, *args):
+        descriptor = real_open(path, flags, *args)
+        if Path(path) == package:
+            package_descriptors.add(descriptor)
+        return descriptor
+
+    def recording_close(descriptor):
+        if descriptor in package_descriptors:
+            closed_descriptors.add(descriptor)
+        return real_close(descriptor)
+
+    monkeypatch.setattr(app_module.os, "open", recording_open)
+    monkeypatch.setattr(app_module.os, "close", recording_close)
+
+    response = registration_system.post(
+        f"/api/node-registration-requests/{created['request_id']}/claim-approved",
+        headers=registration_auth(created),
+        json=claim_body(registration_system, created, created["_private"]),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["package_sha256"] == digest
+    assert package_descriptors
+    assert package_descriptors == closed_descriptors
+
+
+def test_mismatched_windows_package_does_not_consume_claim(
+    registration_system, tmp_path: Path, monkeypatch
+):
+    package, _, _, _ = configure_signed_release(tmp_path, monkeypatch)
+    package.write_bytes(b"tampered-package")
+    created = _approved_windows_request(registration_system)
+
+    response = registration_system.post(
+        f"/api/node-registration-requests/{created['request_id']}/claim-approved",
+        headers=registration_auth(created),
+        json=claim_body(registration_system, created, created["_private"]),
+    )
+
+    assert response.status_code == 503
+    with registration_system.app.state.db() as db:
+        item = db.get(NodeRegistrationRequest, created["request_id"])
+        assert item.status == "approved"
+        assert item.registration_token_hash is not None
+        assert item.challenge_hash is not None
 
 
 def test_windows_claim_is_bound_to_approved_platform_and_signed_release(
