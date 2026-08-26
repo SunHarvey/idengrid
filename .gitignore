@@ -1,0 +1,80 @@
+# Secrets and production configuration
+.env
+.env.*
+!.env.example
+!.env.development.example
+!*.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+mysql.txt
+mysql.env
+*.sql
+!deploy/mysql/init/*.sql
+
+# Databases, state, profiles, logs, backups
+/mysql/
+runtime*/
+backups/
+profiles/
+BrowserProfiles/
+**/Profile/
+**/Runtime/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Rust
+**/target/
+
+# .NET / Windows
+**/bin/
+**/obj/
+**/TestResults/
+artifacts/
+publish/
+
+# Swift / macOS
+**/.build/
+DerivedData/
+*.app
+*.dmg
+*.xcarchive
+
+# Browser and release artifacts
+Components/Browser/
+Chromium.app/
+IdenGrid Browser.app/
+dist/
+build/
+*.zip
+*.exe
+*.dll
+*.pdb
+
+# Node
+node_modules/
+coverage/
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Local operational material
+spikes/
+diagnostics/
+*.local
