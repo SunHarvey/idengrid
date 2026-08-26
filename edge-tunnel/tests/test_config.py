@@ -9,6 +9,7 @@ from edge_tunnel.config import (
     Win32ConfigAPI,
     WindowsObjectInfo,
     _read_limited,
+    _windows_ancestor_sddl_is_restricted,
     _windows_directory_sddl_is_restricted,
     _windows_sddl_is_restricted,
     _windows_settings_from_file,
@@ -313,6 +314,7 @@ def windows_object(path, *, directory, sddl, identity=None, reparse=False):
 
 def safe_windows_objects():
     directory_acl = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)"
+    ancestor_acl = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120116;;;BU)"
     return {
         "c:\\programdata\\idengrid\\edge.json": windows_object(
             r"C:\ProgramData\IdenGrid\edge.json",
@@ -322,8 +324,8 @@ def safe_windows_objects():
         "c:\\programdata\\idengrid": windows_object(
             r"C:\ProgramData\IdenGrid", directory=True, sddl=directory_acl
         ),
-        "c:\\programdata": windows_object(r"C:\ProgramData", directory=True, sddl=directory_acl),
-        "c:\\": windows_object("C:\\", directory=True, sddl=directory_acl),
+        "c:\\programdata": windows_object(r"C:\ProgramData", directory=True, sddl=ancestor_acl),
+        "c:\\": windows_object("C:\\", directory=True, sddl=ancestor_acl),
     }
 
 
@@ -450,6 +452,14 @@ def test_windows_directory_acl_hex_masks_allow_read_but_reject_write():
     assert not _windows_directory_sddl_is_restricted(
         "D:P(A;;0x1f01ff;;;SY)(A;;0x1f01ff;;;BA)(A;;0x120116;;;BU)"
     )
+
+
+def test_windows_ancestor_acl_allows_create_but_rejects_path_replacement():
+    standard_create = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120116;;;BU)"
+    delete_child = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120156;;;BU)"
+    assert _windows_ancestor_sddl_is_restricted(standard_create)
+    assert not _windows_ancestor_sddl_is_restricted(delete_child)
+    assert not _windows_directory_sddl_is_restricted(standard_create)
 
 
 def test_windows_leaf_acl_hex_masks_require_exact_system_full_and_localservice_read():

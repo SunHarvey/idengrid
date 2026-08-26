@@ -364,6 +364,11 @@ try {
     Move-Item -LiteralPath $expanded -Destination $versionRoot
     $dirs = @('config','caddy','caddy\data','caddy\config','logs\edge','logs\gateway','registration','state')
     foreach ($dir in $dirs) { New-Item -ItemType Directory -Path (Join-Path $ProgramDataRoot $dir) -Force | Out-Null }
+    $idengridDataRoot = Split-Path $ProgramDataRoot -Parent
+    foreach ($managedDataRoot in @($idengridDataRoot,$ProgramDataRoot)) {
+        Invoke-Icacls -Path $managedDataRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
+    }
+    Invoke-Icacls -Path (Join-Path $ProgramDataRoot '*') -AclArguments @('/reset','/T','/C')
     $configTarget = Join-Path $ProgramDataRoot 'config\edge.json'
     Invoke-Icacls -Path $ProgramRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')
     Invoke-Icacls -Path $versionRoot -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-19:(OI)(CI)RX','*S-1-5-20:(OI)(CI)RX')

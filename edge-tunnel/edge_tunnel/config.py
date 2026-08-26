@@ -470,6 +470,7 @@ _SYSTEM_SIDS = {"SY", "S-1-5-18"}
 _ADMIN_SIDS = {"BA", "S-1-5-32-544"}
 _LOCAL_SERVICE_SIDS = {"LS", "S-1-5-19"}
 _WRITE_MASK = 0x10000000 | 0x40000000 | 0x000D0156
+_REPLACE_MASK = 0x10000000 | 0x40000000 | 0x000D0040
 
 
 def _windows_path_key(path: str | os.PathLike[str]) -> str:
@@ -553,6 +554,7 @@ def _windows_settings_from_file(path: str, *, api: Any) -> Settings:
         identities.add(leaf_info.identity)
 
         current = PureWindowsPath(leaf_info.final_path).parent
+        immediate_parent = True
         while current != current.parent:
             parent = api.open(str(current), directory=True)
             handles.append(parent)
@@ -565,12 +567,16 @@ def _windows_settings_from_file(path: str, *, api: Any) -> Settings:
                 or _windows_path_key(info.final_path) != _windows_path_key(str(current))
             ):
                 raise RuntimeError("unsafe config path")
-            if info.owner_sid not in (_SYSTEM_SIDS | _ADMIN_SIDS) or not (
+            directory_acl_ok = (
                 _windows_directory_sddl_is_restricted(info.sddl)
-            ):
+                if immediate_parent
+                else _windows_ancestor_sddl_is_restricted(info.sddl)
+            )
+            if info.owner_sid not in (_SYSTEM_SIDS | _ADMIN_SIDS) or not directory_acl_ok:
                 raise RuntimeError("unsafe parent directory permissions")
             identities.add(info.identity)
             current = current.parent
+            immediate_parent = False
         root = api.open(str(current), directory=True)
         handles.append(root)
         root_info = api.inspect(root)
@@ -583,7 +589,7 @@ def _windows_settings_from_file(path: str, *, api: Any) -> Settings:
         ):
             raise RuntimeError("unsafe config path")
         if root_info.owner_sid not in (_SYSTEM_SIDS | _ADMIN_SIDS) or not (
-            _windows_directory_sddl_is_restricted(root_info.sddl)
+            _windows_ancestor_sddl_is_restricted(root_info.sddl)
         ):
             raise RuntimeError("unsafe parent directory permissions")
         raw = api.read_limited(leaf, _MAX_CONFIG_BYTES)
@@ -621,6 +627,14 @@ def _windows_sddl_is_restricted(sddl: str) -> bool:
 
 
 def _windows_directory_sddl_is_restricted(sddl: str) -> bool:
+    return _windows_directory_sddl_respects_mask(sddl, _WRITE_MASK)
+
+
+def _windows_ancestor_sddl_is_restricted(sddl: str) -> bool:
+    return _windows_directory_sddl_respects_mask(sddl, _REPLACE_MASK)
+
+
+def _windows_directory_sddl_respects_mask(sddl: str, unsafe_mask: int) -> bool:
     aces = _aces(sddl)
     if aces is None:
         return False
@@ -639,7 +653,7 @@ def _windows_directory_sddl_is_restricted(sddl: str) -> bool:
             ace_type == "A"
             and "IO" not in flag_parts
             and trustee not in (_SYSTEM_SIDS | _ADMIN_SIDS)
-            and mask & _WRITE_MASK
+            and mask & unsafe_mask
         ):
             return False
     return True
