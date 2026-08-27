@@ -274,12 +274,17 @@ class WindowsEdgeContracts(unittest.TestCase):
 
     def test_upgrade_rollback_contracts(self) -> None:
         upgrade = self.text("scripts/Upgrade-IdenGridEdge.ps1")
+        install = self.text("scripts/Install-IdenGridEdge.ps1")
         self.assertIn("$bundleManifest.version -ne $Version", upgrade)
         self.assertIn("Remove-Item -LiteralPath $newTarget -Recurse -Force", upgrade)
         self.assertIn("Wait-PublicHealth $publicHostname", upgrade[upgrade.index("catch {"):])
         self.assertIn("$previousBackup", upgrade)
         self.assertIn("$stateOriginal", upgrade)
         self.assertIn("Write-JsonAtomically $statePath $stateRestore", upgrade)
+        self.assertIn(".replace-backup", upgrade)
+        self.assertNotIn("[IO.File]::Replace($temporary,$Path,$null", upgrade)
+        self.assertIn(".replace-backup", install)
+        self.assertNotIn("[IO.File]::Replace($temporary,$Path,$null", install)
         self.assertIn("function Remove-ManagedJunction", upgrade)
         self.assertIn("[IO.Directory]::Delete", upgrade)
         self.assertIn("icacls.exe $newTarget", upgrade)

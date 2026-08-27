@@ -189,11 +189,12 @@ function Assert-BundleManifest([string]$Root,[string]$ExpectedVersion) {
     return $manifest
 }
 function Write-JsonAtomically([string]$Path,$Value) {
-    $temporary=Join-Path ([IO.Path]::GetDirectoryName($Path)) ('.'+[IO.Path]::GetFileName($Path)+'.'+[Guid]::NewGuid().ToString('N')+'.tmp')
+    $temporary=$Path+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
+    $backup=$Path+'.'+[Guid]::NewGuid().ToString('N')+'.replace-backup'
     $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes(($Value|ConvertTo-Json -Depth 6))
     $stream=New-Object IO.FileStream($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
     try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
-    try{if(Test-Path -LiteralPath $Path){[IO.File]::Replace($temporary,$Path,$null,$true)}else{[IO.File]::Move($temporary,$Path)}}finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force}}
+    try{if(Test-Path -LiteralPath $Path){[IO.File]::Replace($temporary,$Path,$backup,$true)}else{[IO.File]::Move($temporary,$Path)}}finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force};if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force}}
 }
 function Recover-UpgradeJournal([string]$JournalPath,[string]$StatePath) {
     $current=Join-Path $ProgramRoot 'current';$previous=Join-Path $ProgramRoot 'previous';$newLink=Join-Path $ProgramRoot 'current.new';$legacyNext=Join-Path $ProgramRoot 'current.next'
