@@ -228,6 +228,15 @@ function Recover-UpgradeJournal([string]$JournalPath,[string]$StatePath) {
     Assert-ManagedVersionJunction $current ([string]$journal.old_version)|Out-Null
     $previousBackup=Join-Path $ProgramRoot 'previous.backup'
     if(-not(Test-Path -LiteralPath $previous)-and(Test-Path -LiteralPath $previousBackup)){Assert-ManagedVersionJunction $previousBackup $null|Out-Null;Rename-Item -LiteralPath $previousBackup -NewName 'previous'}
+    $orphanTarget=Join-Path (Join-Path $ProgramRoot 'versions') ([string]$journal.new_version)
+    $orphanReferenced=$false
+    foreach($link in @($current,$previous,$previousBackup,$newLink)){
+        if(Test-Path -LiteralPath $link){
+            $linkItem=Get-Item -LiteralPath $link -Force
+            if(($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -and [IO.Path]::GetFullPath([string]$linkItem.Target).Equals([IO.Path]::GetFullPath($orphanTarget),[StringComparison]::OrdinalIgnoreCase)){$orphanReferenced=$true}
+        }
+    }
+    if((Test-Path -LiteralPath $orphanTarget) -and -not $orphanReferenced){Assert-BundleManifest $orphanTarget ([string]$journal.new_version)|Out-Null;Remove-Item -LiteralPath $orphanTarget -Recurse -Force}
     Remove-Item -LiteralPath $JournalPath -Force
 }
 
