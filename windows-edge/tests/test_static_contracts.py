@@ -215,6 +215,8 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("Assert-FirewallRule", install)
         self.assertIn("install-state.json", uninstall)
         self.assertIn("firewall_rules", install)
+        self.assertIn("$createdFirewallRules.ToArray()", install)
+        self.assertNotIn("@($createdFirewallRules)", install)
         self.assertIn("Assert-FirewallRuleMatchesState", uninstall)
         self.assertIn("Assert-AllowedRoot", uninstall)
         self.assertNotRegex(uninstall, r"\[string\]\$Program(?:Data)?Root")

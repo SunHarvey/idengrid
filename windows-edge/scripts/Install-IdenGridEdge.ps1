@@ -493,7 +493,7 @@ try {
     Invoke-WinSW $gatewayWrapper 'start' 'IdenGridEdgeGateway'
     Wait-PublicHealth $Hostname
     Report-InstallPhase 'gateway'
-    $installState=[pscustomobject][ordered]@{schema_version=1;version=$Version;hostname=$Hostname.ToLowerInvariant();installed_at=[DateTime]::UtcNow.ToString('o');firewall_rules=@($createdFirewallRules)}
+    $installState=[pscustomobject][ordered]@{schema_version=1;version=$Version;hostname=$Hostname.ToLowerInvariant();installed_at=[DateTime]::UtcNow.ToString('o');firewall_rules=$createdFirewallRules.ToArray()}
     Write-JsonAtomically (Join-Path $ProgramDataRoot 'state\install-state.json') $installState
     $currentPhase = 'ready'
     Report-InstallPhase 'ready'
