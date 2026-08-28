@@ -166,6 +166,7 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("Wf/s6zRs0+FjSCqM1BQb5vXIpyv4Ivxm5nAS2wWZGxk=", install)
         self.assertNotIn("REPLACE_WITH_PRODUCTION", install)
         self.assertIn("bootstrap\\register.py", install)
+        self.assertIn("$bootstrapPython -I -B $bootstrapScript", install)
         self.assertIn("package_sha256", install)
         self.assertIn("Assert-Sha256 $bundle $claimPackageSha256", install)
         self.assertIn("Remove-Variable claimJson", install)

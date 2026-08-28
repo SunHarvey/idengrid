@@ -431,7 +431,7 @@ try {
         $bootstrapPython = Join-Path $expanded 'runtime\python.exe'
         $bootstrapScript = Join-Path $expanded 'bootstrap\register.py'
         if (-not (Test-Path -LiteralPath $bootstrapPython -PathType Leaf) -or -not (Test-Path -LiteralPath $bootstrapScript -PathType Leaf)) { throw 'Bundle bootstrap runtime is missing.' }
-        $claimJson = & $bootstrapPython -I $bootstrapScript --server $Server
+        $claimJson = & $bootstrapPython -I -B $bootstrapScript --server $Server
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($claimJson -join ''))) { throw 'Node registration failed.' }
         $claimJson = $claimJson -join ''
         $claim = $claimJson | ConvertFrom-Json
