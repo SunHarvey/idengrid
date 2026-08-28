@@ -196,6 +196,119 @@ function Write-JsonAtomically([string]$Path,$Value) {
     try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
     try{if(Test-Path -LiteralPath $Path){[IO.File]::Replace($temporary,$Path,$backup,$true)}else{[IO.File]::Move($temporary,$Path)}}finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force};if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force}}
 }
+function Get-ScmService([string]$ServiceName) {
+    return Get-CimInstance Win32_Service -Filter ("Name='"+$ServiceName.Replace("'","''")+"'") -ErrorAction Stop
+}
+function ConvertFrom-ServiceImagePath([string]$ImagePath) {
+    $trimmed=$ImagePath.Trim()
+    if($trimmed -match '^"([^"]+)"$'){return [IO.Path]::GetFullPath($Matches[1])}
+    if($trimmed -match '^[^"\s]+$'){return [IO.Path]::GetFullPath($trimmed)}
+    throw 'Managed service ImagePath contains arguments or invalid quoting.'
+}
+function Get-ExpectedServiceWrapper([string]$CurrentPath,[string]$ServiceName) {
+    $leaf=if($ServiceName -eq 'IdenGridEdge'){'IdenGridEdgeService.exe'}elseif($ServiceName -eq 'IdenGridEdgeGateway'){'IdenGridEdgeGateway.exe'}else{throw 'Unexpected managed service name.'}
+    return [IO.Path]::GetFullPath((Join-Path (Join-Path $CurrentPath 'service') $leaf))
+}
+function Assert-RegisteredWrapperIsManaged([string]$ServiceName,[string]$ImagePath) {
+    $wrapper=ConvertFrom-ServiceImagePath $ImagePath
+    $leaf=if($ServiceName -eq 'IdenGridEdge'){'IdenGridEdgeService.exe'}elseif($ServiceName -eq 'IdenGridEdgeGateway'){'IdenGridEdgeGateway.exe'}else{throw 'Unexpected managed service name.'}
+    if(-not [IO.Path]::GetFileName($wrapper).Equals($leaf,[StringComparison]::OrdinalIgnoreCase)){throw 'Service ImagePath names an unexpected wrapper.'}
+    $serviceDirectory=[IO.Path]::GetDirectoryName($wrapper)
+    if(-not [IO.Path]::GetFileName($serviceDirectory).Equals('service',[StringComparison]::OrdinalIgnoreCase)){throw 'Service ImagePath is outside a service directory.'}
+    $wrapperRoot=[IO.Path]::GetDirectoryName($serviceDirectory)
+    $currentRoot=[IO.Path]::GetFullPath((Join-Path $ProgramRoot 'current'))
+    $versionsRoot=[IO.Path]::GetFullPath((Join-Path $ProgramRoot 'versions')).TrimEnd('\')+'\'
+    if(-not $wrapperRoot.Equals($currentRoot,[StringComparison]::OrdinalIgnoreCase)){
+        if(-not $wrapperRoot.StartsWith($versionsRoot,[StringComparison]::OrdinalIgnoreCase)){throw 'Refusing to control a service registered outside managed versions.'}
+        $relative=$wrapperRoot.Substring($versionsRoot.Length)
+        if($relative.Contains('\')-or$relative -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$'){throw 'Refusing to control a service registered outside a managed version root.'}
+    }
+    return $wrapper
+}
+function Assert-ServiceImagePath([string]$ServiceName,[string]$ExpectedWrapper) {
+    $service=Get-ScmService $ServiceName
+    if($null -eq $service){throw "SCM service is missing: $ServiceName"}
+    $actual=ConvertFrom-ServiceImagePath ([string]$service.PathName)
+    if(-not $actual.Equals([IO.Path]::GetFullPath($ExpectedWrapper),[StringComparison]::OrdinalIgnoreCase)){throw "SCM service ImagePath does not match current: $ServiceName"}
+}
+function Stop-ValidatedManagedService([string]$ServiceName) {
+    $service=Get-ScmService $ServiceName
+    if($null -eq $service){return $null}
+    $registeredWrapper=Assert-RegisteredWrapperIsManaged $ServiceName ([string]$service.PathName)
+    if([string]$service.State -ne 'Stopped'){
+        Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+        (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(30))
+    }
+    $stopped=Get-ScmService $ServiceName
+    if($null -ne $stopped -and [string]$stopped.State -ne 'Stopped'){throw "Managed service did not stop: $ServiceName"}
+    return $registeredWrapper
+}
+function Wait-ServiceAbsent([string]$ServiceName) {
+    $deadline=[DateTime]::UtcNow.AddSeconds(30)
+    do{if($null -eq (Get-ScmService $ServiceName)){return};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
+    throw "SCM service was not removed: $ServiceName"
+}
+function Stop-ManagedGatewayOrphans {
+    $expectedConfig=[regex]::Escape((Join-Path $ProgramDataRoot 'caddy\Caddyfile'))
+    $expectedArguments='\srun\s+--config\s+"'+$expectedConfig+'"\s+--adapter\s+caddyfile\s*$'
+    $currentRoot=[IO.Path]::GetFullPath((Join-Path $ProgramRoot 'current'))
+    $versionsRoot=[IO.Path]::GetFullPath((Join-Path $ProgramRoot 'versions')).TrimEnd('\')+'\'
+    $managed=@()
+    foreach($process in @(Get-CimInstance Win32_Process -Filter "Name='caddy.exe'" -ErrorAction Stop)){
+        if([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)-or[string]::IsNullOrWhiteSpace([string]$process.CommandLine)){continue}
+        $executable=[IO.Path]::GetFullPath([string]$process.ExecutablePath)
+        if(-not $executable.EndsWith('\gateway\caddy.exe',[StringComparison]::OrdinalIgnoreCase)){continue}
+        $gatewayRoot=[IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($executable))
+        $managedRoot=$gatewayRoot.Equals($currentRoot,[StringComparison]::OrdinalIgnoreCase)
+        if(-not $managedRoot -and $gatewayRoot.StartsWith($versionsRoot,[StringComparison]::OrdinalIgnoreCase)){
+            $relative=$gatewayRoot.Substring($versionsRoot.Length)
+            $managedRoot=(-not $relative.Contains('\') -and $relative -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$')
+        }
+        if(-not $managedRoot -or [string]$process.CommandLine -notmatch $expectedArguments){continue}
+        $managed+=,$process
+    }
+    foreach($process in $managed){
+        $result=Invoke-CimMethod -InputObject $process -MethodName Terminate -ErrorAction Stop
+        if([uint32]$result.ReturnValue -ne 0){throw 'Failed to terminate a validated managed Caddy orphan.'}
+    }
+    foreach($process in $managed){
+        $deadline=[DateTime]::UtcNow.AddSeconds(15)
+        do{$remaining=Get-CimInstance Win32_Process -Filter ("ProcessId="+[uint32]$process.ProcessId) -ErrorAction Stop;if($null -eq $remaining){break};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
+        if($null -ne $remaining){throw 'Validated managed Caddy orphan did not exit.'}
+    }
+}
+function Repair-ManagedServiceRegistration([string]$CurrentPath) {
+    Assert-ManagedVersionJunction $CurrentPath $null|Out-Null
+    $specs=@(
+        [pscustomobject]@{Name='IdenGridEdgeGateway';Wrapper=Get-ExpectedServiceWrapper $CurrentPath 'IdenGridEdgeGateway'},
+        [pscustomobject]@{Name='IdenGridEdge';Wrapper=Get-ExpectedServiceWrapper $CurrentPath 'IdenGridEdge'}
+    )
+    foreach($spec in $specs){
+        $serviceName=[string]$spec.Name;$expectedWrapper=[string]$spec.Wrapper
+        $registeredWrapper=Stop-ValidatedManagedService $serviceName
+        if($serviceName -eq 'IdenGridEdgeGateway'){Stop-ManagedGatewayOrphans}
+        if($null -ne $registeredWrapper){Invoke-ServiceAction $expectedWrapper 'uninstall';Wait-ServiceAbsent $serviceName}
+    }
+    [Array]::Reverse($specs)
+    foreach($spec in $specs){
+        $serviceName=[string]$spec.Name;$expectedWrapper=[string]$spec.Wrapper
+        Invoke-ServiceAction $expectedWrapper 'install'
+        Assert-ServiceImagePath $serviceName $expectedWrapper
+    }
+}
+function Assert-ManagedServicesRunning([string]$CurrentPath) {
+    foreach($serviceName in @('IdenGridEdge','IdenGridEdgeGateway')){
+        $expectedWrapper=Get-ExpectedServiceWrapper $CurrentPath $serviceName
+        Assert-ServiceImagePath $serviceName $expectedWrapper
+        $service=Get-ScmService $serviceName
+        if([string]$service.State -ne 'Running'){throw "Managed SCM service is not running: $ServiceName"}
+    }
+}
+function Start-AndAssertManagedServices([string]$CurrentPath) {
+    Invoke-ServiceAction (Get-ExpectedServiceWrapper $CurrentPath 'IdenGridEdge') 'start'
+    Invoke-ServiceAction (Get-ExpectedServiceWrapper $CurrentPath 'IdenGridEdgeGateway') 'start'
+    Assert-ManagedServicesRunning $CurrentPath
+}
 function Recover-UpgradeJournal([string]$JournalPath,[string]$StatePath) {
     $current=Join-Path $ProgramRoot 'current';$previous=Join-Path $ProgramRoot 'previous';$newLink=Join-Path $ProgramRoot 'current.new';$legacyNext=Join-Path $ProgramRoot 'current.next'
     if(Test-Path -LiteralPath $legacyNext){Remove-ManagedJunction $legacyNext}
@@ -209,6 +322,8 @@ function Recover-UpgradeJournal([string]$JournalPath,[string]$StatePath) {
         if(Test-Path -LiteralPath $newLink){Remove-ManagedJunction $newLink}
         $previousBackup=Join-Path $ProgramRoot 'previous.backup'
         if(Test-Path -LiteralPath $previousBackup){Assert-ManagedVersionJunction $previousBackup $null|Out-Null;Remove-ManagedJunction $previousBackup}
+        Repair-ManagedServiceRegistration $current
+        Start-AndAssertManagedServices $current
         Remove-Item -LiteralPath $JournalPath -Force
         return
     }
@@ -228,6 +343,8 @@ function Recover-UpgradeJournal([string]$JournalPath,[string]$StatePath) {
     Assert-ManagedVersionJunction $current ([string]$journal.old_version)|Out-Null
     $previousBackup=Join-Path $ProgramRoot 'previous.backup'
     if(-not(Test-Path -LiteralPath $previous)-and(Test-Path -LiteralPath $previousBackup)){Assert-ManagedVersionJunction $previousBackup $null|Out-Null;Rename-Item -LiteralPath $previousBackup -NewName 'previous'}
+    Repair-ManagedServiceRegistration $current
+    Start-AndAssertManagedServices $current
     $orphanTarget=Join-Path (Join-Path $ProgramRoot 'versions') ([string]$journal.new_version)
     $orphanReferenced=$false
     foreach($link in @($current,$previous,$previousBackup,$newLink)){
@@ -302,8 +419,9 @@ try {
 
     $oldTarget=Assert-ManagedVersionJunction $current $currentVersion
     $edgeWrapper=Join-Path $oldTarget 'service\IdenGridEdgeService.exe';$gatewayWrapper=Join-Path $oldTarget 'service\IdenGridEdgeGateway.exe'
-    Invoke-ServiceAction $gatewayWrapper 'stop'
-    Invoke-ServiceAction $edgeWrapper 'stop'
+    Stop-ValidatedManagedService 'IdenGridEdgeGateway'|Out-Null
+    Stop-ManagedGatewayOrphans
+    Stop-ValidatedManagedService 'IdenGridEdge'|Out-Null
     $nextJunction = Join-Path $ProgramRoot 'current.new'
     $previous = Join-Path $ProgramRoot 'previous'
     if (Test-Path -LiteralPath $nextJunction) { Remove-ManagedJunction $nextJunction }
@@ -320,12 +438,14 @@ try {
     Write-JsonAtomically $journalPath ([pscustomobject][ordered]@{schema_version=1;phase='switched';old_version=$currentVersion;new_version=$Version})
 
     $activeTarget=Assert-ManagedVersionJunction $current $Version
-    $edgeWrapper=Join-Path $activeTarget 'service\IdenGridEdgeService.exe'
-    $gatewayWrapper=Join-Path $activeTarget 'service\IdenGridEdgeGateway.exe'
+    Repair-ManagedServiceRegistration $current
+    $edgeWrapper=Get-ExpectedServiceWrapper $current 'IdenGridEdge'
+    $gatewayWrapper=Get-ExpectedServiceWrapper $current 'IdenGridEdgeGateway'
     Invoke-ServiceAction $edgeWrapper 'start'
     Wait-EdgeHealth
     Invoke-ServiceAction $gatewayWrapper 'start'
     Wait-PublicHealth $publicHostname
+    Assert-ManagedServicesRunning $current
     $state = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } else { New-Object psobject }
     $state | Add-Member -NotePropertyName version -NotePropertyValue $Version -Force
     $state | Add-Member -NotePropertyName upgraded_at -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
@@ -348,20 +468,23 @@ try {
         # Rollback is junction-only: ProgramData config and Caddy ACME state are never replaced.
         try {
             $failedTarget=Assert-ManagedVersionJunction $current $Version
-            & (Join-Path $failedTarget 'service\IdenGridEdgeGateway.exe') stop 2>$null
-            & (Join-Path $failedTarget 'service\IdenGridEdgeService.exe') stop 2>$null
+            Stop-ValidatedManagedService 'IdenGridEdgeGateway'|Out-Null
+            Stop-ManagedGatewayOrphans
+            Stop-ValidatedManagedService 'IdenGridEdge'|Out-Null
             Remove-ManagedJunction $current
             Rename-Item -LiteralPath (Join-Path $ProgramRoot 'previous') -NewName 'current'
             $restoredTarget=Assert-ManagedVersionJunction $current $currentVersion
-            $edgeWrapper=Join-Path $restoredTarget 'service\IdenGridEdgeService.exe'
-            $gatewayWrapper=Join-Path $restoredTarget 'service\IdenGridEdgeGateway.exe'
+            Repair-ManagedServiceRegistration $current
+            $edgeWrapper=Get-ExpectedServiceWrapper $current 'IdenGridEdge'
+            $gatewayWrapper=Get-ExpectedServiceWrapper $current 'IdenGridEdgeGateway'
             Invoke-ServiceAction $edgeWrapper 'start'
             Wait-EdgeHealth
             Invoke-ServiceAction $gatewayWrapper 'start'
             Wait-PublicHealth $publicHostname
+            Assert-ManagedServicesRunning $current
         } catch { Write-Warning 'Rollback service recovery requires operator attention.' }
     } else {
-        try { $restoredTarget=Assert-ManagedVersionJunction $current $currentVersion; $edgeWrapper=Join-Path $restoredTarget 'service\IdenGridEdgeService.exe'; $gatewayWrapper=Join-Path $restoredTarget 'service\IdenGridEdgeGateway.exe'; Invoke-ServiceAction $edgeWrapper 'start' $false; Wait-EdgeHealth; Invoke-ServiceAction $gatewayWrapper 'start' $false; Wait-PublicHealth $publicHostname } catch { Write-Warning 'Pre-switch service recovery requires operator attention.' }
+        try { $restoredTarget=Assert-ManagedVersionJunction $current $currentVersion; Repair-ManagedServiceRegistration $current; $edgeWrapper=Get-ExpectedServiceWrapper $current 'IdenGridEdge'; $gatewayWrapper=Get-ExpectedServiceWrapper $current 'IdenGridEdgeGateway'; Invoke-ServiceAction $edgeWrapper 'start'; Wait-EdgeHealth; Invoke-ServiceAction $gatewayWrapper 'start'; Wait-PublicHealth $publicHostname; Assert-ManagedServicesRunning $current } catch { Write-Warning 'Pre-switch service recovery requires operator attention.' }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $ProgramRoot 'previous')) -and (Test-Path -LiteralPath $previousBackup)) { Rename-Item -LiteralPath $previousBackup -NewName 'previous' }
     $stateRestore=$stateOriginalObject
