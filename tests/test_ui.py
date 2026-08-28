@@ -237,6 +237,10 @@ def test_admin_nodes_has_node_initiated_approval_flow(system):
     assert "public_key_fingerprint" in page.text
     assert "machine_fingerprint" in page.text
     assert "等待管理员批准" in page.text
+    assert "待审批申请" in page.text
+    assert "接入历史记录" in page.text
+    assert "已批准并接入，无需操作" in page.text
+    assert "edge_node_id" in page.text
     assert "高级手动登记" in page.text
     assert 'id="createEnrollmentForm"' not in page.text
     assert 'id="enrollmentList"' not in page.text
