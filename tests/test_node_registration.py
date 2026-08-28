@@ -51,6 +51,7 @@ def key_material():
 def registration_body(public_key_pem: str, **overrides):
     body = {
         "public_key_pem": public_key_pem,
+        "platform": "linux",
         "machine_fingerprint": hashlib.sha256(b"machine-id").hexdigest(),
         "reported_hostname": "rocky-edge",
         "public_ipv4": "8.8.8.8",
@@ -81,6 +82,28 @@ def proof_message(request_id: str, challenge: str, public_ip: str, machine: str)
     return (
         f"hermes-node-registration-v1\n{request_id}\n{challenge}\n{public_ip}\n{machine}\n".encode()
     )
+
+
+def claim_message(request_id: str, challenge: str, public_ip: str, machine: str) -> bytes:
+    return f"hermes-node-claim-v1\n{request_id}\n{challenge}\n{public_ip}\n{machine}\n".encode()
+
+
+def claim_body(client: TestClient, created: dict, private: Ed25519PrivateKey) -> dict[str, str]:
+    status_response = client.get(
+        f"/api/node-registration-requests/{created['request_id']}/status",
+        headers=registration_auth(created),
+    )
+    assert status_response.status_code == 200, status_response.text
+    challenge = status_response.json()["claim_challenge"]
+    signature = private.sign(
+        claim_message(
+            created["request_id"],
+            challenge,
+            "8.8.8.8",
+            hashlib.sha256(b"machine-id").hexdigest(),
+        )
+    )
+    return {"challenge": challenge, "signature": base64.b64encode(signature).decode()}
 
 
 def prove(client: TestClient, created: dict, private: Ed25519PrivateKey, **overrides):
@@ -127,6 +150,7 @@ def test_node_registration_request_table_has_security_fields(system):
         "public_key_fingerprint",
         "machine_fingerprint",
         "reported_hostname",
+        "platform",
         "actual_public_ipv4",
         "os_name",
         "cpu_count",
@@ -145,6 +169,28 @@ def test_node_registration_request_table_has_security_fields(system):
         "last_error",
         "install_admin_ssh_key",
     }
+
+
+def test_registration_requires_explicit_supported_platform_and_persists_it(registration_system):
+    _, public_pem = key_material()
+    missing = registration_body(public_pem)
+    missing.pop("platform")
+    assert registration_system.post("/api/node-registration-requests", json=missing).status_code == 422
+
+    created = register(
+        registration_system,
+        public_pem,
+        platform="windows",
+        os_name="Windows Server 2025",
+    )
+    assert created.status_code == 201, created.text
+    with registration_system.app.state.db() as db:
+        item = db.get(NodeRegistrationRequest, created.json()["request_id"])
+        assert item.platform == "windows"
+
+    registration_system.app.state.registration_rate.clear()
+    _, invalid_key = key_material()
+    assert register(registration_system, invalid_key, platform="darwin").status_code == 422
 
 
 def test_registration_returns_secrets_once_and_persists_only_hashes(registration_system):
@@ -263,6 +309,7 @@ def prepared_request(client: TestClient):
     private, public_pem = key_material()
     created = register(client, public_pem).json()
     assert prove(client, created, private).status_code == 200
+    created["_private"] = private
     return created
 
 
@@ -274,6 +321,7 @@ def test_admin_list_is_safe_and_accept_binds_ip_creates_disabled_node(registrati
     row = next(item for item in listed.json() if item["id"] == created["request_id"])
     assert row["actual_public_ipv4"] == "8.8.8.8"
     assert row["reported_hostname"] == "rocky-edge"
+    assert row["platform"] == "linux"
     assert row["os_name"] == "Rocky Linux 9"
     assert row["cpu_count"] == 4
     assert len(row["public_key_fingerprint"]) == 64
@@ -327,6 +375,7 @@ def test_admin_list_is_safe_and_accept_binds_ip_creates_disabled_node(registrati
         assert item.decided_by_user_id is not None
         assert item.install_admin_ssh_key is True
         assert node.enabled is False
+        assert node.platform == item.platform == "linux"
         assert node.expected_public_ipv4 == item.actual_public_ipv4
         assert enrollment.status == "claimed"
         assert enrollment.report_token_hash
@@ -357,6 +406,7 @@ def test_admin_reject_has_no_node_and_rejected_cannot_claim(registration_system)
     claim = registration_system.post(
         f"/api/node-registration-requests/{created['request_id']}/claim-approved",
         headers=registration_auth(created),
+        json={"challenge": "r" * 32, "signature": base64.b64encode(b"x" * 64).decode()},
     )
     assert claim.status_code == 401
     with registration_system.app.state.db() as db:
@@ -381,6 +431,7 @@ def test_claim_approved_returns_config_once_and_consumes_token(registration_syst
     response = registration_system.post(
         f"/api/node-registration-requests/{created['request_id']}/claim-approved",
         headers=registration_auth(created),
+        json=claim_body(registration_system, created, created["_private"]),
     )
     assert response.status_code == 200, response.text
     result = response.json()
@@ -393,12 +444,82 @@ def test_claim_approved_returns_config_once_and_consumes_token(registration_syst
     replay = registration_system.post(
         f"/api/node-registration-requests/{created['request_id']}/claim-approved",
         headers=registration_auth(created),
+        json={"challenge": "r" * 32, "signature": base64.b64encode(b"x" * 64).decode()},
     )
     assert replay.status_code == 401
     with registration_system.app.state.db() as db:
         item = db.get(NodeRegistrationRequest, created["request_id"])
         assert item.status == "installing"
         assert item.registration_token_hash is None
+
+
+def test_claim_approved_rejects_leaked_token_from_other_source_and_requires_private_key(
+    tmp_path, monkeypatch
+):
+    package = tmp_path / "edge-tunnel.tar.gz"
+    package.write_bytes(b"package")
+    digest = hashlib.sha256(package.read_bytes()).hexdigest()
+    package.with_suffix(package.suffix + ".sha256").write_text(
+        f"{digest}  {package.name}\n"
+    )
+    monkeypatch.setattr("cloudbrowser.app.LINUX_EDGE_PACKAGE_PATH", package)
+    source = {"ip": "8.8.8.8"}
+    app = create_app(
+        database_url=f"sqlite:///{tmp_path / 'source-bound.db'}",
+        secret_key="registration-source-bound-secret",
+        runner=FakeBrowserRunner(),
+        bootstrap_admin=("admin", "Admin-password-123"),
+        public_origin="https://central.example",
+        enrollment_source_ip=lambda request: source["ip"],
+    )
+    with TestClient(app) as client:
+        private, public_pem = key_material()
+        created = register(client, public_pem).json()
+        assert prove(client, created, private).status_code == 200
+        assert client.post(
+            f"/api/admin/node-registration-requests/{created['request_id']}/accept",
+            headers=admin_auth(client),
+            json={
+                "node_name": "edge-source-bound",
+                "endpoint": "https://edge-source-bound.example.com",
+                "expected_public_ipv4": "8.8.8.8",
+            },
+        ).status_code == 200
+        body = claim_body(client, created, private)
+
+        source["ip"] = "8.8.4.4"
+        stolen = client.post(
+            f"/api/node-registration-requests/{created['request_id']}/claim-approved",
+            headers=registration_auth(created),
+            json=body,
+        )
+        assert stolen.status_code == 401
+
+        source["ip"] = "8.8.8.8"
+        wrong_key, _ = key_material()
+        wrong_signature = {
+            "challenge": body["challenge"],
+            "signature": base64.b64encode(
+                wrong_key.sign(
+                    claim_message(
+                        created["request_id"],
+                        body["challenge"],
+                        "8.8.8.8",
+                        hashlib.sha256(b"machine-id").hexdigest(),
+                    )
+                )
+            ).decode(),
+        }
+        assert client.post(
+            f"/api/node-registration-requests/{created['request_id']}/claim-approved",
+            headers=registration_auth(created),
+            json=wrong_signature,
+        ).status_code == 401
+        assert client.post(
+            f"/api/node-registration-requests/{created['request_id']}/claim-approved",
+            headers=registration_auth(created),
+            json=body,
+        ).status_code == 200
 
 
 def test_report_reconciles_registration_and_allows_failed_recovery(registration_system):
@@ -415,6 +536,7 @@ def test_report_reconciles_registration_and_allows_failed_recovery(registration_
     claimed = registration_system.post(
         f"/api/node-registration-requests/{created['request_id']}/claim-approved",
         headers=registration_auth(created),
+        json=claim_body(registration_system, created, created["_private"]),
     ).json()
     report_headers = {"Authorization": f"Report {claimed['report_token']}"}
     failed = registration_system.post(

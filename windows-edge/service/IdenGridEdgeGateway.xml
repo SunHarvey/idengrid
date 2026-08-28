@@ -1,0 +1,19 @@
+<service>
+  <id>IdenGridEdgeGateway</id>
+  <name>IdenGrid Edge Gateway</name>
+  <description>IdenGrid Caddy TLS gateway</description>
+  <executable>%BASE%\..\gateway\caddy.exe</executable>
+  <arguments>run --config &quot;C:\ProgramData\IdenGrid\Edge\caddy\Caddyfile&quot; --adapter caddyfile</arguments>
+  <workingdirectory>C:\ProgramData\IdenGrid\Edge\caddy</workingdirectory>
+  <env name="XDG_DATA_HOME" value="C:\ProgramData\IdenGrid\Edge\caddy\data"/>
+  <env name="XDG_CONFIG_HOME" value="C:\ProgramData\IdenGrid\Edge\caddy\config"/>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>15sec</stoptimeout>
+  <serviceaccount><domain>NT AUTHORITY</domain><user>NetworkService</user><allowservicelogon>true</allowservicelogon></serviceaccount>
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="15 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <logpath>C:\ProgramData\IdenGrid\Edge\logs\gateway</logpath>
+  <log mode="roll-by-size-time"><sizeThreshold>10240</sizeThreshold><pattern>yyyyMMdd</pattern><autoRollAtTime>00:00:00</autoRollAtTime><zipOlderThanNumDays>14</zipOlderThanNumDays><zipDateFormat>yyyyMMdd</zipDateFormat></log>
+</service>

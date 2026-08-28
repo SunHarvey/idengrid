@@ -2,72 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 
+from .config import Settings
+from .resources import create_resource_provider
 from .targets import PublicTargetPolicy, TargetDenied
 from .tickets import Ticket, TicketError, TicketVerifier
-
-
-@dataclass(frozen=True)
-class Settings:
-    node_id: str
-    ticket_secret: bytes
-    max_connections: int = 64
-    max_frame_bytes: int = 1_048_576
-    max_bytes_per_connection: int = 67_108_864
-    idle_timeout: float = 60.0
-    max_connection_seconds: float = 600.0
-    connect_timeout: float = 10.0
-    ticket_max_ttl: int = 60
-
-    @classmethod
-    def from_env(cls) -> Settings:
-        secret = os.environ.get("EDGE_TICKET_SECRET", "").encode()
-        node = os.environ.get("EDGE_NODE_ID", "")
-        if (
-            not node
-            or len(node) > 64
-            or any(
-                char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-                for char in node
-            )
-        ):
-            raise RuntimeError("EDGE_NODE_ID is missing or unsafe")
-        if len(secret) < 32:
-            raise RuntimeError("EDGE_TICKET_SECRET must be at least 32 bytes")
-        try:
-            settings = cls(
-                node_id=node,
-                ticket_secret=secret,
-                max_connections=int(os.getenv("EDGE_MAX_CONNECTIONS", "64")),
-                max_frame_bytes=int(os.getenv("EDGE_MAX_FRAME_BYTES", "1048576")),
-                max_bytes_per_connection=int(os.getenv("EDGE_MAX_BYTES", "67108864")),
-                idle_timeout=float(os.getenv("EDGE_IDLE_TIMEOUT", "60")),
-                max_connection_seconds=float(os.getenv("EDGE_MAX_DURATION", "600")),
-                connect_timeout=float(os.getenv("EDGE_CONNECT_TIMEOUT", "10")),
-                ticket_max_ttl=int(os.getenv("EDGE_TICKET_MAX_TTL", "60")),
-            )
-        except ValueError as exc:
-            raise RuntimeError("invalid edge configuration value") from exc
-        limits = (
-            settings.max_connections,
-            settings.max_frame_bytes,
-            settings.max_bytes_per_connection,
-            settings.idle_timeout,
-            settings.max_connection_seconds,
-            settings.connect_timeout,
-            settings.ticket_max_ttl,
-        )
-        if any(value <= 0 for value in limits) or settings.ticket_max_ttl > 300:
-            raise RuntimeError("invalid edge configuration limit")
-        return settings
 
 
 @dataclass
@@ -143,32 +87,6 @@ class CachedPublicIPv4:
         self._value = value
         self._expires_at = now + self._ttl_seconds
         return value
-
-
-class LinuxResourceProvider:
-    def __init__(
-        self,
-        *,
-        read_text: Callable[[str], str] | None = None,
-        statvfs: Callable[[str], Any] = os.statvfs,
-    ) -> None:
-        self._read_text = read_text or (lambda path: Path(path).read_text())
-        self._statvfs = statvfs
-
-    def __call__(self) -> dict[str, int | float]:
-        memory = {}
-        for line in self._read_text("/proc/meminfo").splitlines():
-            key, value = line.split(":", 1)
-            memory[key] = int(value.split()[0]) * 1024
-        filesystem = self._statvfs("/")
-        return {
-            "load_1m": float(self._read_text("/proc/loadavg").split()[0]),
-            "memory_total_bytes": memory["MemTotal"],
-            "memory_available_bytes": memory["MemAvailable"],
-            "disk_total_bytes": filesystem.f_frsize * filesystem.f_blocks,
-            "disk_free_bytes": filesystem.f_frsize * filesystem.f_bavail,
-            "uptime_seconds": float(self._read_text("/proc/uptime").split()[0]),
-        }
 
 
 async def _default_connector(address: str, port: int, family: int):
@@ -341,7 +259,7 @@ def create_app(
     app[REPLAYS] = ReplayCache()
     app[CONNECTOR] = connector or _default_connector
     app[PUBLIC_IPV4_PROVIDER] = public_ipv4_provider or CachedPublicIPv4(_fetch_public_ipv4)
-    app[RESOURCE_PROVIDER] = resource_provider or LinuxResourceProvider()
+    app[RESOURCE_PROVIDER] = resource_provider or create_resource_provider()
     app.router.add_get("/healthz", health)
     app.router.add_get("/status", status)
     app.router.add_get("/v1/tunnel", tunnel)

@@ -7,10 +7,14 @@ import hmac
 import io
 import ipaddress
 import json
+import os
+import re
 import secrets
 import shlex
+import stat as stat_module
 import uuid
 from collections.abc import Callable, Generator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -34,7 +38,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from itsdangerous import BadSignature, URLSafeSerializer
 from pydantic import BaseModel, Field
 from sqlalchemy import inspect, select, text, update
@@ -71,7 +75,11 @@ from .models import (
     Workspace,
 )
 from .runner import BrowserRunner
-from .schema import migrate_mysql_active_uniqueness, migrate_mysql_device_platform_constraint
+from .schema import (
+    migrate_edge_platform_schema,
+    migrate_mysql_active_uniqueness,
+    migrate_mysql_device_platform_constraint,
+)
 from .security import NetworkPolicy, SessionTicketSigner
 
 passwords = PasswordHasher()
@@ -89,6 +97,188 @@ BRAND_ASSET_HEADERS = {
     "Cache-Control": "public, max-age=31536000, immutable",
     "X-Content-Type-Options": "nosniff",
 }
+LINUX_EDGE_PACKAGE_PATH = Path("/data/dist/edge-tunnel.tar.gz")
+WINDOWS_EDGE_INSTALLER_PATH = Path("/data/windows-edge/scripts/Install-IdenGridEdge.ps1")
+WINDOWS_EDGE_RELEASE_MANIFEST_PATH = Path("/data/dist/release-manifest.json")
+WINDOWS_EDGE_RELEASE_SIGNATURE_PATH = Path("/data/dist/release-manifest.json.sig")
+WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64 = "Wf/s6zRs0+FjSCqM1BQb5vXIpyv4Ivxm5nAS2wWZGxk="
+LINUX_EDGE_PACKAGE_ROUTE = "/edge-package/edge-tunnel.tar.gz"
+LINUX_EDGE_PACKAGE_MAX_BYTES = 2 * 1024**3
+WINDOWS_EDGE_PACKAGE_MAX_BYTES = 8 * 1024**3
+WINDOWS_EDGE_STREAM_CHUNK_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class WindowsRelease:
+    package_path: Path
+    checksum: str
+    route: str
+    size: int
+    manifest_raw: bytes
+    signature_raw: bytes
+
+
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _read_small_regular_file(path: Path, limit: int) -> bytes:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat_module.S_ISREG(file_stat.st_mode) or not 0 <= file_stat.st_size <= limit:
+            raise ValueError("invalid release metadata")
+        data = os.read(descriptor, limit + 1)
+        if len(data) != file_stat.st_size:
+            raise ValueError("invalid release metadata")
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def verified_windows_release() -> WindowsRelease:
+    try:
+        manifest_raw = _read_small_regular_file(WINDOWS_EDGE_RELEASE_MANIFEST_PATH, 4096)
+        signature_raw = _read_small_regular_file(WINDOWS_EDGE_RELEASE_SIGNATURE_PATH, 256)
+        signature_text = signature_raw.decode("ascii").strip()
+        signature = base64.b64decode(signature_text, validate=True)
+        public_key_raw = base64.b64decode(
+            WINDOWS_EDGE_RELEASE_PUBLIC_KEY_BASE64, validate=True
+        )
+        if len(signature) != 64 or len(public_key_raw) != 32:
+            raise ValueError("invalid release signature")
+        Ed25519PublicKey.from_public_bytes(public_key_raw).verify(signature, manifest_raw)
+        document = json.loads(
+            manifest_raw.decode("ascii"), object_pairs_hook=_strict_json_object
+        )
+        package = document["package"]
+        if (
+            set(document) != {"schema_version", "package"}
+            or type(document["schema_version"]) is not int
+            or document["schema_version"] != 1
+            or set(package) != {"filename", "sha256", "size", "version"}
+            or not isinstance(package["filename"], str)
+            or not package["filename"].startswith("IdenGrid-Edge-Windows-Server-2025-x64-v")
+            or not package["filename"].endswith(".zip")
+            or Path(package["filename"]).name != package["filename"]
+            or not isinstance(package["sha256"], str)
+            or len(package["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in package["sha256"])
+            or type(package["size"]) is not int
+            or not 0 < package["size"] <= WINDOWS_EDGE_PACKAGE_MAX_BYTES
+            or not isinstance(package["version"], str)
+            or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", package["version"])
+            is None
+            or package["filename"]
+            != f"IdenGrid-Edge-Windows-Server-2025-x64-v{package['version']}.zip"
+        ):
+            raise ValueError("invalid release manifest")
+        package_path = WINDOWS_EDGE_RELEASE_MANIFEST_PATH.parent / package["filename"]
+    except (
+        InvalidSignature,
+        OSError,
+        KeyError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
+    return WindowsRelease(
+        package_path=package_path,
+        checksum=package["sha256"],
+        route=f"/edge-package/{package['filename']}",
+        size=package["size"],
+        manifest_raw=manifest_raw,
+        signature_raw=signature_raw,
+    )
+
+
+def _open_verified_windows_package(release: WindowsRelease) -> int:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            release.package_path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+        )
+        file_stat = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(file_stat.st_mode)
+            or file_stat.st_size != release.size
+            or not 0 < file_stat.st_size <= WINDOWS_EDGE_PACKAGE_MAX_BYTES
+        ):
+            raise ValueError("invalid release package")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, WINDOWS_EDGE_STREAM_CHUNK_BYTES):
+            digest.update(chunk)
+        if not hmac.compare_digest(digest.hexdigest(), release.checksum):
+            raise ValueError("invalid release package")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor
+    except (OSError, ValueError):
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
+
+
+def _stream_descriptor(descriptor: int) -> Generator[bytes]:
+    try:
+        while chunk := os.read(descriptor, WINDOWS_EDGE_STREAM_CHUNK_BYTES):
+            yield chunk
+    finally:
+        os.close(descriptor)
+
+
+def _open_verified_linux_package() -> tuple[int, str, int]:
+    checksum_path = LINUX_EDGE_PACKAGE_PATH.with_suffix(LINUX_EDGE_PACKAGE_PATH.suffix + ".sha256")
+    descriptor = -1
+    try:
+        expected, filename = checksum_path.read_text(encoding="ascii").split()
+        if (
+            len(expected) != 64
+            or any(character not in "0123456789abcdef" for character in expected)
+            or filename != LINUX_EDGE_PACKAGE_PATH.name
+        ):
+            raise ValueError("invalid Linux package checksum")
+        descriptor = os.open(
+            LINUX_EDGE_PACKAGE_PATH, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+        )
+        file_stat = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(file_stat.st_mode)
+            or not 0 < file_stat.st_size <= LINUX_EDGE_PACKAGE_MAX_BYTES
+        ):
+            raise ValueError("invalid Linux package")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, WINDOWS_EDGE_STREAM_CHUNK_BYTES):
+            digest.update(chunk)
+        actual = digest.hexdigest()
+        if not hmac.compare_digest(expected, actual):
+            raise ValueError("invalid Linux package")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor, actual, file_stat.st_size
+    except (OSError, UnicodeError, ValueError):
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
+
+
+def verified_edge_package(platform: str) -> tuple[str, str]:
+    if platform == "windows":
+        release = verified_windows_release()
+        descriptor = _open_verified_windows_package(release)
+        os.close(descriptor)
+        return release.checksum, release.route
+    if platform != "linux":
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
+    descriptor, actual, _ = _open_verified_linux_package()
+    os.close(descriptor)
+    return actual, LINUX_EDGE_PACKAGE_ROUTE
 
 
 class LoginBody(BaseModel):
@@ -220,13 +410,16 @@ class EdgeEnrollmentClaimBody(BaseModel):
 
 class EdgeEnrollmentReportBody(BaseModel):
     phase: str = Field(
-        pattern=r"^(installing|dependencies|configuring|caddy|starting|ready|failed)$"
+        pattern=(
+            r"^(installing|dependencies|configuring|caddy|gateway|service|starting|ready|failed)$"
+        )
     )
     error: str | None = Field(default=None, max_length=500)
 
 
 class NodeRegistrationCreateBody(BaseModel):
     public_key_pem: str = Field(min_length=80, max_length=1000)
+    platform: str = Field(pattern=r"^(linux|windows)$")
     machine_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     reported_hostname: str = Field(min_length=1, max_length=255)
     public_ipv4: str = Field(min_length=7, max_length=15)
@@ -238,6 +431,11 @@ class NodeRegistrationCreateBody(BaseModel):
 
 
 class NodeRegistrationProofBody(BaseModel):
+    challenge: str = Field(min_length=32, max_length=200)
+    signature: str = Field(min_length=80, max_length=200)
+
+
+class NodeRegistrationClaimBody(BaseModel):
     challenge: str = Field(min_length=32, max_length=200)
     signature: str = Field(min_length=80, max_length=200)
 
@@ -351,6 +549,7 @@ def create_app(
         return await call_next(request)
 
     Base.metadata.create_all(engine)
+    migrate_edge_platform_schema(engine)
     migrate_mysql_active_uniqueness(engine)
     migrate_mysql_device_platform_constraint(engine)
     migrate_edge_health_schema(engine)
@@ -664,10 +863,57 @@ def create_app(
 
     @app.get("/edge-package/edge-tunnel.tar.gz")
     def edge_package():
-        return FileResponse(
-            "/data/dist/edge-tunnel.tar.gz",
+        descriptor, _, size = _open_verified_linux_package()
+        return StreamingResponse(
+            _stream_descriptor(descriptor),
             media_type="application/gzip",
-            headers={"X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Length": str(size),
+            },
+        )
+
+    @app.get("/bootstrap/Install-IdenGridEdge.ps1")
+    def windows_edge_installer():
+        return FileResponse(
+            WINDOWS_EDGE_INSTALLER_PATH,
+            media_type="text/plain",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.get("/edge-package/release-manifest.json")
+    def windows_edge_release_manifest():
+        release = verified_windows_release()
+        return Response(
+            content=release.manifest_raw,
+            media_type="application/json",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.get("/edge-package/release-manifest.json.sig")
+    def windows_edge_release_signature():
+        release = verified_windows_release()
+        return Response(
+            content=release.signature_raw,
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.get("/edge-package/{filename}")
+    def windows_edge_versioned_package(filename: str):
+        release = verified_windows_release()
+        if release.route != f"/edge-package/{filename}":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Release package not found")
+        descriptor = _open_verified_windows_package(release)
+        return StreamingResponse(
+            _stream_descriptor(descriptor),
+            media_type="application/zip",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Length": str(release.size),
+            },
         )
 
     @app.get("/healthz")
@@ -1348,6 +1594,7 @@ def create_app(
         return {
             "id": node.id,
             "name": node.name,
+            "platform": node.platform,
             "endpoint": node.endpoint,
             "enabled": node.enabled,
             "maintenance_mode": node.maintenance_mode,
@@ -1378,18 +1625,6 @@ def create_app(
 
     def enrollment_hash(value: str) -> str:
         return hashlib.sha256(value.encode()).hexdigest()
-
-    def verified_edge_package_checksum() -> str:
-        package_path = Path("/data/dist/edge-tunnel.tar.gz")
-        checksum_path = Path("/data/dist/edge-tunnel.tar.gz.sha256")
-        try:
-            expected = checksum_path.read_text().split()[0]
-            actual = hashlib.sha256(package_path.read_bytes()).hexdigest()
-        except (FileNotFoundError, IndexError):
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
-        if len(expected) != 64 or not hmac.compare_digest(expected, actual):
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Edge package unavailable")
-        return actual
 
     def serialize_enrollment(db: Session, item: NodeEnrollment) -> dict:
         now = datetime.now(UTC)
@@ -1513,6 +1748,20 @@ def create_app(
     def invalid_registration() -> HTTPException:
         return HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid registration")
 
+    @app.get("/api/node-registration-source")
+    def node_registration_source(request: Request):
+        source_ip = trusted_claim_source(request)
+        try:
+            address = ipaddress.ip_address(source_ip) if source_ip else None
+        except ValueError:
+            address = None
+        if not isinstance(address, ipaddress.IPv4Address) or not address.is_global:
+            raise invalid_registration()
+        return JSONResponse(
+            content={"public_ipv4": str(address)},
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
     def registration_token_parts(
         request_id: str, authorization: str | None, db: Session
     ) -> tuple[NodeRegistrationRequest, str]:
@@ -1529,6 +1778,13 @@ def create_app(
         if not hmac.compare_digest(enrollment_hash(raw), item.registration_token_hash):
             raise invalid_registration()
         return item, raw
+
+    def registration_claim_challenge(item: NodeRegistrationRequest) -> str:
+        material = (
+            f"node-claim-challenge-v1:{item.id}:{item.registration_token_hash or ''}".encode()
+        )
+        digest = hmac.new(secret_key.encode(), material, hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
     @app.post("/api/node-registration-requests", status_code=201)
     def create_node_registration(
@@ -1572,6 +1828,7 @@ def create_app(
             public_key_fingerprint=hashlib.sha256(key_der).hexdigest(),
             machine_fingerprint=body.machine_fingerprint,
             reported_hostname=body.reported_hostname,
+            platform=body.platform,
             actual_public_ipv4=body.public_ipv4,
             os_name=body.os_name,
             cpu_count=body.cpu_count,
@@ -1669,7 +1926,7 @@ def create_app(
         db: Session = Depends(get_db),
     ):
         item, _ = registration_token_parts(request_id, authorization, db)
-        return {
+        result = {
             "status": item.status,
             "phase": None,
             "error": item.last_error,
@@ -1681,6 +1938,9 @@ def create_app(
                 else None
             ),
         }
+        if item.status == "approved" and item.challenge_hash:
+            result["claim_challenge"] = registration_claim_challenge(item)
+        return result
 
     def serialize_registration_request(item: NodeRegistrationRequest) -> dict:
         return {
@@ -1689,6 +1949,7 @@ def create_app(
             "public_key_fingerprint": item.public_key_fingerprint,
             "machine_fingerprint": item.machine_fingerprint,
             "reported_hostname": item.reported_hostname,
+            "platform": item.platform,
             "actual_public_ipv4": item.actual_public_ipv4,
             "os_name": item.os_name,
             "cpu_count": item.cpu_count,
@@ -1752,6 +2013,7 @@ def create_app(
         ):
             raise HTTPException(status.HTTP_409_CONFLICT, "Edge node already exists")
         now = datetime.now(UTC)
+        claim_challenge = registration_claim_challenge(item)
         decision = db.execute(
             update(NodeRegistrationRequest)
             .where(
@@ -1765,6 +2027,8 @@ def create_app(
                 decided_by_user_id=actor.id,
                 updated_at=now,
                 install_admin_ssh_key=body.install_admin_ssh_key,
+                challenge_hash=enrollment_hash(claim_challenge),
+                challenge_expires_at=now + timedelta(minutes=15),
             )
         )
         if decision.rowcount != 1:
@@ -1774,6 +2038,7 @@ def create_app(
             name=body.node_name,
             endpoint=body.endpoint,
             shared_secret=secrets.token_urlsafe(32),
+            platform=item.platform,
             enabled=False,
             health_status="disabled",
             expected_public_ipv4=item.actual_public_ipv4,
@@ -1859,11 +2124,44 @@ def create_app(
     @app.post("/api/node-registration-requests/{request_id}/claim-approved")
     def claim_approved_node_registration(
         request_id: str,
-        authorization: Annotated[str | None, Header()] = None,
+        body: NodeRegistrationClaimBody,
+        request: Request,
+        authorization: str | None = Header(default=None),
         db: Session = Depends(get_db),
     ):
         item, _ = registration_token_parts(request_id, authorization, db)
         if item.status != "approved" or item.proved_at is None or item.edge_node_id is None:
+            raise invalid_registration()
+        source_ip = trusted_claim_source(request)
+        now = datetime.now(UTC)
+        expires_at = (
+            item.challenge_expires_at.replace(tzinfo=UTC)
+            if item.challenge_expires_at.tzinfo is None
+            else item.challenge_expires_at
+        )
+        valid = (
+            source_ip is not None
+            and hmac.compare_digest(source_ip, item.actual_public_ipv4)
+            and expires_at > now
+            and bool(item.challenge_hash)
+            and hmac.compare_digest(
+                enrollment_hash(body.challenge), item.challenge_hash or ""
+            )
+        )
+        try:
+            signature = base64.b64decode(body.signature, validate=True)
+            public_key = serialization.load_pem_public_key(item.public_key_pem.encode())
+            message = (
+                f"hermes-node-claim-v1\n{item.id}\n{body.challenge}\n"
+                f"{item.actual_public_ipv4}\n{item.machine_fingerprint}\n"
+            ).encode()
+            if not isinstance(public_key, Ed25519PublicKey):
+                valid = False
+            else:
+                public_key.verify(signature, message)
+        except (InvalidSignature, TypeError, ValueError):
+            valid = False
+        if not valid:
             raise invalid_registration()
         node = db.get(EdgeNode, item.edge_node_id)
         enrollment = db.scalar(
@@ -1873,17 +2171,22 @@ def create_app(
         )
         if enrollment is None:
             raise invalid_registration()
-        package_checksum = verified_edge_package_checksum()
+        package_checksum, package_route = verified_edge_package(node.platform)
         report_token = derived_report_token(item, enrollment.id)
-        now = datetime.now(UTC)
         consumed = db.execute(
             update(NodeRegistrationRequest)
             .where(
                 NodeRegistrationRequest.id == item.id,
                 NodeRegistrationRequest.status == "approved",
                 NodeRegistrationRequest.registration_token_hash == item.registration_token_hash,
+                NodeRegistrationRequest.challenge_hash == item.challenge_hash,
             )
-            .values(status="installing", registration_token_hash=None, updated_at=now)
+            .values(
+                status="installing",
+                registration_token_hash=None,
+                challenge_hash=None,
+                updated_at=now,
+            )
         )
         if consumed.rowcount != 1:
             db.rollback()
@@ -1908,7 +2211,7 @@ def create_app(
                 "connect_timeout": 10,
                 "ticket_max_ttl": 60,
             },
-            "package_url": f"{origin}/edge-package/edge-tunnel.tar.gz",
+            "package_url": f"{origin}{package_route}",
             "package_sha256": package_checksum,
             "report_token": report_token,
             "enrollment_id": enrollment.id,
@@ -1962,7 +2265,7 @@ def create_app(
                 item.updated_at = now
                 db.commit()
             raise invalid_enrollment()
-        package_checksum = verified_edge_package_checksum()
+        package_checksum, package_route = verified_edge_package(node.platform)
         consumed = db.execute(
             update(NodeEnrollment)
             .where(
@@ -2006,7 +2309,7 @@ def create_app(
                 "connect_timeout": 10,
                 "ticket_max_ttl": 60,
             },
-            "package_url": f"{origin}/edge-package/edge-tunnel.tar.gz",
+            "package_url": f"{origin}{package_route}",
             "package_sha256": package_checksum,
             "report_token": report_token,
         }

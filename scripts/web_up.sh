@@ -68,7 +68,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 "$UV_BIN" run uvicorn cloudbrowser.main:app \
-  --host 127.0.0.1 --port "${PORT:-8000}" --proxy-headers --no-access-log \
+  --host 127.0.0.1 --port "${PORT:-8000}" --proxy-headers \
+  --forwarded-allow-ips 127.0.0.1 --no-access-log \
   >"${DATA_DIR:-/data/runtime-web}/api.log" 2>&1 &
 API_PID=$!
 for _ in {1..60}; do

@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "platform": "windows",
+  "architecture": "x86_64",
+  "artifacts": [
+    {
+      "name": "cpython",
+      "kind": "cpython",
+      "version": "3.11.9",
+      "filename": "python-3.11.9-embed-amd64.zip",
+      "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
+      "sha256": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
+    },
+    {
+      "name": "aiohttp",
+      "kind": "wheel",
+      "version": "3.14.3",
+      "filename": "aiohttp-3.14.3-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/73/0c/2af9d1674baccd1dbd47282a93d660a22e57ef6167c856deb24b4214fbab/aiohttp-3.14.3-cp311-cp311-win_amd64.whl",
+      "sha256": "e1e74298bab6ee0d6e749ed4fd1901c7e604bdda32c03d787a2cc71c46d0433d"
+    },
+    {
+      "name": "aiohappyeyeballs",
+      "kind": "wheel",
+      "version": "2.6.1",
+      "filename": "aiohappyeyeballs-2.6.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/0f/15/5bf3b99495fb160b63f95972b81750f18f7f4e02ad051373b669d17d44f2/aiohappyeyeballs-2.6.1-py3-none-any.whl",
+      "sha256": "f349ba8f4b75cb25c99c5c2d84e997e485204d2902a9597802b0371f09331fb8"
+    },
+    {
+      "name": "aiosignal",
+      "kind": "wheel",
+      "version": "1.4.0",
+      "filename": "aiosignal-1.4.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl",
+      "sha256": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e"
+    },
+    {
+      "name": "attrs",
+      "kind": "wheel",
+      "version": "25.3.0",
+      "filename": "attrs-25.3.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/77/06/bb80f5f86020c4551da315d78b3ab75e8228f89f0162f2c3a819e407941a/attrs-25.3.0-py3-none-any.whl",
+      "sha256": "427318ce031701fea540783410126f03899a97ffc6f61596ad581ac2e40e3bc3"
+    },
+    {
+      "name": "frozenlist",
+      "kind": "wheel",
+      "version": "1.7.0",
+      "filename": "frozenlist-1.7.0-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/58/17/fe61124c5c333ae87f09bb67186d65038834a47d974fc10a5fadb4cc5ae1/frozenlist-1.7.0-cp311-cp311-win_amd64.whl",
+      "sha256": "387cbfdcde2f2353f19c2f66bbb52406d06ed77519ac7ee21be0232147c2592d"
+    },
+    {
+      "name": "multidict",
+      "kind": "wheel",
+      "version": "6.6.4",
+      "filename": "multidict-6.6.4-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/74/7d/36b045c23a1ab98507aefd44fd8b264ee1dd5e5010543c6fccf82141ccef/multidict-6.6.4-cp311-cp311-win_amd64.whl",
+      "sha256": "d8c112f7a90d8ca5d20213aa41eac690bb50a76da153e3afb3886418e61cb22e"
+    },
+    {
+      "name": "propcache",
+      "kind": "wheel",
+      "version": "0.3.2",
+      "filename": "propcache-0.3.2-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/e1/2d/89fe4489a884bc0da0c3278c552bd4ffe06a1ace559db5ef02ef24ab446b/propcache-0.3.2-cp311-cp311-win_amd64.whl",
+      "sha256": "e53af8cb6a781b02d2ea079b5b853ba9430fcbe18a8e3ce647d5982a3ff69f39"
+    },
+    {
+      "name": "yarl",
+      "kind": "wheel",
+      "version": "1.20.1",
+      "filename": "yarl-1.20.1-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/f0/09/d9c7942f8f05c32ec72cd5c8e041c8b29b5807328b68b4801ff2511d4d5e/yarl-1.20.1-cp311-cp311-win_amd64.whl",
+      "sha256": "26ef53a9e726e61e9cd1cda6b478f17e350fb5800b4bd1cd9fe81c4d91cfeb2e"
+    },
+    {
+      "name": "idna",
+      "kind": "wheel",
+      "version": "3.10",
+      "filename": "idna-3.10-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/76/c6/c88e154df9c4e1a2a66ccf0005a88dfb2650c1dffb6f5ce603dfbd452ce3/idna-3.10-py3-none-any.whl",
+      "sha256": "946d195a0d259cbba61165e88e65941f16e9b36ea6ddb97f00452bae8b1287d3"
+    },
+    {
+      "name": "typing_extensions",
+      "kind": "wheel",
+      "version": "4.14.1",
+      "filename": "typing_extensions-4.14.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/b5/00/d631e67a838026495268c2f6884f3711a15a9a2a96cd244fdaea53b823fb/typing_extensions-4.14.1-py3-none-any.whl",
+      "sha256": "d1e1e3b58374dc93031d6eda2420a48ea44a36c2b4766a4fdeb3710755731d76"
+    },
+    {
+      "name": "psutil",
+      "kind": "wheel",
+      "version": "7.0.0",
+      "filename": "psutil-7.0.0-cp37-abi3-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/50/1b/6921afe68c74868b4c9fa424dad3be35b095e16687989ebbb50ce4fceb7c/psutil-7.0.0-cp37-abi3-win_amd64.whl",
+      "sha256": "4cf3d4eb1aa9b348dec30105c55cd9b7d4629285735a102beb4441e38db90553"
+    },
+    {
+      "name": "cryptography",
+      "kind": "wheel",
+      "version": "45.0.5",
+      "filename": "cryptography-45.0.5-cp37-abi3-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/79/b3/28ac139109d9005ad3f6b6f8976ffede6706a6478e21c889ce36c840918e/cryptography-45.0.5-cp37-abi3-win_amd64.whl",
+      "sha256": "90cb0a7bb35959f37e23303b7eed0a32280510030daba3f7fdfbb65defde6a97"
+    },
+    {
+      "name": "cffi",
+      "kind": "wheel",
+      "version": "1.17.1",
+      "filename": "cffi-1.17.1-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/3d/97/50228be003bb2802627d28ec0627837ac0bf35c90cf769812056f235b2d1/cffi-1.17.1-cp311-cp311-win_amd64.whl",
+      "sha256": "caaf0640ef5f5517f49bc275eca1406b0ffa6aa184892812030f04c2abf589a0"
+    },
+    {
+      "name": "pycparser",
+      "kind": "wheel",
+      "version": "2.22",
+      "filename": "pycparser-2.22-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/13/a3/a812df4e2dd5696d1f351d58b8fe16a405b234ad2886a0dab9183fb78109/pycparser-2.22-py3-none-any.whl",
+      "sha256": "c3702b6d3dd8c7abc1afa565d7e63d53a1d0bd86cdc24edd75470f4de499cfcc"
+    },
+    {
+      "name": "caddy",
+      "kind": "caddy",
+      "version": "2.10.2",
+      "filename": "caddy_2.10.2_windows_amd64.zip",
+      "url": "https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_windows_amd64.zip",
+      "sha256": "9fd1ef9be5d9b05852b66ccc25f96f23d8651bcab20779861a745bdffa273722"
+    },
+    {
+      "name": "winsw",
+      "kind": "winsw",
+      "version": "2.12.0",
+      "filename": "WinSW-x64.exe",
+      "url": "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe",
+      "sha256": "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da"
+    }
+  ]
+}

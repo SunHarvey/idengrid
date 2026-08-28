@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "node_id": "REPLACE_WITH_NODE_ID",
+  "ticket_secret": "REPLACE_WITH_RANDOM_SECRET",
+  "max_connections": 256,
+  "max_frame_bytes": 1048576,
+  "max_bytes_per_connection": 2147483648,
+  "idle_timeout": 300,
+  "max_connection_seconds": 28800,
+  "connect_timeout": 10,
+  "ticket_max_ttl": 60
+}
