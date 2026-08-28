@@ -357,6 +357,9 @@ class WindowsEdgeContracts(unittest.TestCase):
         install = self.text("scripts/Install-IdenGridEdge.ps1")
         self.assertIn("function Assert-Claim", install)
         self.assertIn("Claim response exceeds 65536 bytes", install)
+        self.assertIn("$Claim.enrollment_id -isnot [string]", install)
+        self.assertIn("$Claim.enrollment_id -notmatch '^[0-9a-f]{32}$'", install)
+        self.assertNotIn("$Claim.enrollment_id -isnot [int]", install)
         for field in ("node_name", "edge_ticket_secret", "domain", "report_token", "resources"):
             self.assertIn(field, install)
 

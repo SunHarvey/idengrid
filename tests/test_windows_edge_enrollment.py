@@ -517,7 +517,11 @@ def test_windows_claim_streams_package_hash_and_closes_descriptor(
     )
 
     assert response.status_code == 200
-    assert response.json()["package_sha256"] == digest
+    payload = response.json()
+    assert payload["package_sha256"] == digest
+    assert isinstance(payload["enrollment_id"], str)
+    assert len(payload["enrollment_id"]) == 32
+    assert all(character in "0123456789abcdef" for character in payload["enrollment_id"])
     assert package_descriptors
     assert package_descriptors == closed_descriptors
 
