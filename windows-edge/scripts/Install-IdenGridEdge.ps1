@@ -294,15 +294,32 @@ function Write-ProtectedConfigAtomically([string]$Destination,[byte[]]$Bytes) {
     $directory=[IO.Path]::GetDirectoryName($Destination)
     $temporary=Join-Path $directory ('.edge.json.'+[Guid]::NewGuid().ToString('N')+'.tmp')
     $backup=Join-Path $directory ('.edge.json.'+[Guid]::NewGuid().ToString('N')+'.replace-backup')
+    $movedExisting=$false
     $stream=New-Object IO.FileStream($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
     try{$stream.Write($Bytes,0,$Bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
     try{
         Invoke-Icacls -Path $temporary -AclArguments @('/setowner','*S-1-5-18')
         Invoke-Icacls -Path $temporary -AclArguments @('/inheritance:r','/grant:r','*S-1-5-18:F','*S-1-5-19:R')
         Assert-ExactConfigAcl $temporary
-        if(Test-Path -LiteralPath $Destination){[IO.File]::Replace($temporary,$Destination,$backup,$true)}else{[IO.File]::Move($temporary,$Destination)}
+        if(Test-Path -LiteralPath $Destination){
+            Assert-ExactConfigAcl $Destination
+            [IO.File]::Move($Destination,$backup)
+            $movedExisting=$true
+        }
+        [IO.File]::Move($temporary,$Destination)
         Assert-ExactConfigAcl $Destination
-    }finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force};if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force}}
+        if(Test-Path -LiteralPath $backup){[IO.File]::Delete($backup)}
+        $movedExisting=$false
+    }catch{
+        if($movedExisting){
+            if(Test-Path -LiteralPath $Destination){[IO.File]::Delete($Destination)}
+            if(Test-Path -LiteralPath $backup){[IO.File]::Move($backup,$Destination)}
+        }
+        throw
+    }finally{
+        if(Test-Path -LiteralPath $temporary){[IO.File]::Delete($temporary)}
+        if(-not $movedExisting -and (Test-Path -LiteralPath $backup)){[IO.File]::Delete($backup)}
+    }
 }
 function Assert-ServiceAbsent([string]$Name) {
     $services=@(Get-CimInstance Win32_Service -Filter ("Name='"+$Name.Replace("'","''")+"'") -ErrorAction Stop)

@@ -467,6 +467,10 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertNotIn("*S-1-5-32-544:(WD,AD,DC)", install)
         self.assertLess(install.index("Protect-ConfigDirectory"), install.index("Write-ProtectedConfigAtomically"))
         self.assertIn("[IO.File]::Move($temporary,$Destination)", install)
+        self.assertIn("[IO.File]::Move($Destination,$backup)", install)
+        self.assertIn("Assert-ExactConfigAcl $Destination", install)
+        self.assertIn("$movedExisting", install)
+        self.assertNotIn("[IO.File]::Replace($temporary,$Destination", install)
         self.assertIn("Assert-ServiceAbsent", install)
         self.assertIn("Rollback requires operator repair", install)
 
