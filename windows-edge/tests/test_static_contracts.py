@@ -293,6 +293,66 @@ class WindowsEdgeContracts(unittest.TestCase):
         self.assertIn("icacls.exe $newTarget", upgrade)
         self.assertIn("-I -B -m edge_tunnel --help", upgrade)
 
+    def test_upgrade_reregisters_both_services_against_current_junction(self) -> None:
+        upgrade = self.text("scripts/Upgrade-IdenGridEdge.ps1")
+        self.assertIn("function Repair-ManagedServiceRegistration", upgrade)
+        repair = upgrade[
+            upgrade.index("function Repair-ManagedServiceRegistration") : upgrade.index(
+                "function Recover-UpgradeJournal"
+            )
+        ]
+        self.assertIn("Name='IdenGridEdge'", repair)
+        self.assertIn("Name='IdenGridEdgeGateway'", repair)
+        self.assertIn("Invoke-ServiceAction $expectedWrapper 'uninstall'", repair)
+        self.assertIn("Invoke-ServiceAction $expectedWrapper 'install'", repair)
+        self.assertIn("Assert-ServiceImagePath $serviceName $expectedWrapper", repair)
+        switched = upgrade[upgrade.index("$switched = $true") :]
+        self.assertLess(
+            switched.index("Repair-ManagedServiceRegistration $current"),
+            switched.index("Invoke-ServiceAction $edgeWrapper 'start'"),
+        )
+
+    def test_upgrade_recovery_repairs_scm_without_killing_unexpected_processes(self) -> None:
+        upgrade = self.text("scripts/Upgrade-IdenGridEdge.ps1")
+        recovery = upgrade[
+            upgrade.index("function Recover-UpgradeJournal") : upgrade.index(
+                "function Invoke-ServiceAction"
+            )
+        ]
+        self.assertGreaterEqual(recovery.count("Repair-ManagedServiceRegistration $current"), 2)
+        self.assertGreaterEqual(recovery.count("Start-AndAssertManagedServices $current"), 2)
+        self.assertIn("Assert-RegisteredWrapperIsManaged", upgrade)
+        self.assertIn("Stop-Service -Name $ServiceName", upgrade)
+        self.assertNotIn("Stop-Process", upgrade)
+        self.assertNotIn("taskkill", upgrade.lower())
+
+    def test_upgrade_terminates_only_strictly_identified_managed_caddy_orphans(self) -> None:
+        upgrade = self.text("scripts/Upgrade-IdenGridEdge.ps1")
+        cleanup = upgrade[
+            upgrade.index("function Stop-ManagedGatewayOrphans") : upgrade.index(
+                "function Repair-ManagedServiceRegistration"
+            )
+        ]
+        self.assertIn("Get-CimInstance Win32_Process", cleanup)
+        self.assertIn("ExecutablePath", cleanup)
+        self.assertIn("CommandLine", cleanup)
+        self.assertIn("gateway\\caddy.exe", cleanup)
+        self.assertIn("ProgramDataRoot", cleanup)
+        self.assertIn("Invoke-CimMethod", cleanup)
+        self.assertIn("Stop-ManagedGatewayOrphans", upgrade[upgrade.index("function Repair-") :])
+
+    def test_upgrade_health_gates_require_running_scm_services_and_current_images(self) -> None:
+        upgrade = self.text("scripts/Upgrade-IdenGridEdge.ps1")
+        self.assertIn("function Assert-ManagedServicesRunning", upgrade)
+        assertion = upgrade[
+            upgrade.index("function Assert-ManagedServicesRunning") : upgrade.index(
+                "function Start-AndAssertManagedServices"
+            )
+        ]
+        self.assertIn("State -ne 'Running'", assertion)
+        self.assertIn("Assert-ServiceImagePath", assertion)
+        self.assertGreaterEqual(upgrade.count("Assert-ManagedServicesRunning $current"), 3)
+
     def test_claim_has_secondary_type_and_length_validation(self) -> None:
         install = self.text("scripts/Install-IdenGridEdge.ps1")
         self.assertIn("function Assert-Claim", install)
