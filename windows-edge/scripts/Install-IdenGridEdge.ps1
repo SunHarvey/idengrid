@@ -115,6 +115,7 @@ function Invoke-HttpsDownload([string]$Uri,[string]$Destination) {
     $handler = New-Object Net.Http.HttpClientHandler
     $handler.AllowAutoRedirect = $true
     $client = New-Object Net.Http.HttpClient -ArgumentList (,$handler)
+    $client.Timeout = [TimeSpan]::FromMinutes(10)
     try {
         $response = $client.GetAsync($Uri).GetAwaiter().GetResult()
         if (-not $response.IsSuccessStatusCode -or $response.RequestMessage.RequestUri.Scheme -ne 'https') { throw 'Download failed or redirected away from HTTPS.' }

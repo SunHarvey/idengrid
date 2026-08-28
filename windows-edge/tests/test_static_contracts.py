@@ -462,6 +462,8 @@ class WindowsEdgeContracts(unittest.TestCase):
             self.assertIn("Manifest exceeds package resource limits", text)
 
         self.assertIn("function Write-ProtectedConfigAtomically", install)
+        self.assertIn("$client.Timeout = [TimeSpan]::FromMinutes(10)", install)
+        self.assertIn("$client.Timeout=[TimeSpan]::FromMinutes(10)", upgrade)
         self.assertIn("*S-1-5-32-544:(OI)F", install)
         self.assertNotIn("*S-1-5-32-544:F'", install)
         self.assertNotIn("*S-1-5-32-544:(WD,AD,DC)", install)
