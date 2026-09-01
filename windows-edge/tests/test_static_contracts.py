@@ -120,6 +120,8 @@ class WindowsEdgeContracts(unittest.TestCase):
             self.assertEqual("10", log.findtext("keepFiles"))
             self.assertIsNone(log.find("autoRollAtTime"))
             self.assertIsNone(log.find("zipOlderThanNumDays"))
+            self.assertIsNone(log.find("pattern"))
+            self.assertIsNone(log.find("zipDateFormat"))
 
     def test_gateway_is_loopback_only_and_access_log_is_disabled(self) -> None:
         caddy = self.text("templates/Caddyfile.template")

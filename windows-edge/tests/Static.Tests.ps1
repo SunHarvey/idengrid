@@ -28,7 +28,10 @@ Assert-True ($edge.service.arguments -match '--config' -and $edge.service.argume
 foreach ($service in @($edge.service,$gateway.service)) {
     Assert-True ($service.log.mode -eq 'roll-by-size') 'WinSW must avoid the crash-prone roll-by-size-time mode.'
     Assert-True ($service.log.sizeThreshold -eq '10240' -and $service.log.keepFiles -eq '10') 'WinSW size logging must be bounded.'
-    Assert-True (@($service.log.PSObject.Properties.Name) -notcontains 'autoRollAtTime' -and @($service.log.PSObject.Properties.Name) -notcontains 'zipOlderThanNumDays') 'WinSW time rotation must remain disabled.'
+    $logProperties=@($service.log.PSObject.Properties.Name)
+    foreach($forbidden in @('autoRollAtTime','zipOlderThanNumDays','pattern','zipDateFormat')) {
+        Assert-True ($logProperties -notcontains $forbidden) "WinSW time rotation field must remain disabled: $forbidden"
+    }
 }
 $xmlText = (Read-Utf8 'service\IdenGridEdgeService.xml') + (Read-Utf8 'service\IdenGridEdgeGateway.xml')
 Assert-True ($xmlText -notmatch '(?i)ticket_secret|EDGE_TICKET_SECRET') 'A secret reference appears in service XML.'
