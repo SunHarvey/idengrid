@@ -25,6 +25,11 @@ Assert-True ($edge.service.serviceaccount.user -eq 'LocalService') 'Edge must ru
 Assert-True ($gateway.service.serviceaccount.user -eq 'NetworkService') 'Gateway must run as NetworkService.'
 Assert-True (@($gateway.service.env | Where-Object name -eq 'XDG_DATA_HOME').Count -eq 1) 'Gateway must persist Caddy data in ProgramData.'
 Assert-True ($edge.service.arguments -match '--config' -and $edge.service.arguments -match '--port 8787') 'Edge service must use config path and port 8787.'
+foreach ($service in @($edge.service,$gateway.service)) {
+    Assert-True ($service.log.mode -eq 'roll-by-size') 'WinSW must avoid the crash-prone roll-by-size-time mode.'
+    Assert-True ($service.log.sizeThreshold -eq '10240' -and $service.log.keepFiles -eq '10') 'WinSW size logging must be bounded.'
+    Assert-True (@($service.log.PSObject.Properties.Name) -notcontains 'autoRollAtTime' -and @($service.log.PSObject.Properties.Name) -notcontains 'zipOlderThanNumDays') 'WinSW time rotation must remain disabled.'
+}
 $xmlText = (Read-Utf8 'service\IdenGridEdgeService.xml') + (Read-Utf8 'service\IdenGridEdgeGateway.xml')
 Assert-True ($xmlText -notmatch '(?i)ticket_secret|EDGE_TICKET_SECRET') 'A secret reference appears in service XML.'
 $caddy = Read-Utf8 'templates\Caddyfile.template'

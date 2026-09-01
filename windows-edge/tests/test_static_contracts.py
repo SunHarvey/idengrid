@@ -108,6 +108,15 @@ class WindowsEdgeContracts(unittest.TestCase):
         gateway_env = {item.attrib["name"]: item.attrib["value"] for item in gateway.findall("env")}
         self.assertIn("XDG_DATA_HOME", gateway_env)
         self.assertIn("ProgramData", gateway_env["XDG_DATA_HOME"])
+        for service in (edge, gateway):
+            log = service.find("log")
+            if log is None:
+                self.fail("WinSW log configuration is required")
+            self.assertEqual("roll-by-size", log.attrib.get("mode"))
+            self.assertEqual("10240", log.findtext("sizeThreshold"))
+            self.assertEqual("10", log.findtext("keepFiles"))
+            self.assertIsNone(log.find("autoRollAtTime"))
+            self.assertIsNone(log.find("zipOlderThanNumDays"))
 
     def test_gateway_is_loopback_only_and_access_log_is_disabled(self) -> None:
         caddy = self.text("templates/Caddyfile.template")

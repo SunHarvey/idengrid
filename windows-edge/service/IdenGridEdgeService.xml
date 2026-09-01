@@ -13,5 +13,5 @@
   <onfailure action="restart" delay="15 sec"/>
   <resetfailure>1 hour</resetfailure>
   <logpath>C:\ProgramData\IdenGrid\Edge\logs\edge</logpath>
-  <log mode="roll-by-size-time"><sizeThreshold>10240</sizeThreshold><pattern>yyyyMMdd</pattern><autoRollAtTime>00:00:00</autoRollAtTime><zipOlderThanNumDays>14</zipOlderThanNumDays><zipDateFormat>yyyyMMdd</zipDateFormat></log>
+  <log mode="roll-by-size"><sizeThreshold>10240</sizeThreshold><keepFiles>10</keepFiles></log>
 </service>
