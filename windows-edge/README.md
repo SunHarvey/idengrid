@@ -9,7 +9,7 @@ This directory contains the packaging and lifecycle framework for a **headless, 
 - Edge runs as `NT AUTHORITY\LocalService`; Caddy runs separately as `NT AUTHORITY\NetworkService`.
 - Edge listens only on `127.0.0.1:8787`. Only the named inbound firewall rules `IdenGrid Edge HTTP` (80/TCP) and `IdenGrid Edge HTTPS` (443/TCP) are created.
 - The Node Secret is read only from `C:\ProgramData\IdenGrid\Edge\config\edge.json`. It is never accepted as a script parameter and never appears in service arguments, environment variables, XML, or normal logs.
-- Caddy access logging is disabled by omission. WinSW stdout/stderr logs are bounded and old logs are compressed.
+- Caddy access logging is disabled by omission. WinSW child stdout/stderr logs are size-bounded with ten retained files per stream. WinSW's low-volume wrapper lifecycle log is separate and is not compressed.
 - Every network download is HTTPS (including its final redirect target) and is accepted only after SHA-256 verification. Formal installs additionally require a detached Ed25519 signature rooted in the public key embedded in the installer.
 
 No production hostname, address, credential, token, or certificate is stored in this tree.

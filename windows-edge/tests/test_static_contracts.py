@@ -108,6 +108,9 @@ class WindowsEdgeContracts(unittest.TestCase):
         gateway_env = {item.attrib["name"]: item.attrib["value"] for item in gateway.findall("env")}
         self.assertIn("XDG_DATA_HOME", gateway_env)
         self.assertIn("ProgramData", gateway_env["XDG_DATA_HOME"])
+        readme = self.text("README.md")
+        self.assertIn("WinSW child stdout/stderr logs are size-bounded", readme)
+        self.assertNotIn("old logs are compressed", readme)
         for service in (edge, gateway):
             log = service.find("log")
             if log is None:
