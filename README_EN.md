@@ -92,11 +92,17 @@ pytest -q windows-client/tests/Static
 A full WPF build requires Windows and .NET 10:
 
 ```powershell
-$env:IDENGRID_API_BASE_URL = "https://api.example.com/"
-.\windows-client\Build-IdenGrid-Windows.ps1
+$env:IDENGRID_API_BASE_URL = "https://control.example.invalid/"
+$expectedRuntimeManifestSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+.\windows-client\Build-IdenGrid-Windows.ps1 `
+  -BrowserRuntimePath "C:\Build\Input\BraveRuntime" `
+  -BrowserRuntimeManifestPath "C:\Build\Input\brave-runtime-manifest.json" `
+  -ExpectedRuntimeManifestSha256 $expectedRuntimeManifestSha256 `
+  -BrowserRuntimeArchivePath "C:\Build\Input\brave-runtime.zip" `
+  -MediaGateResultPath "C:\Build\Input\brave-media-gate.json"
 ```
 
-The build script validates the HTTPS origin and injects it through a temporary configuration resource without modifying the repository template.
+The domain, paths, and digest above are placeholders. The build validates the HTTPS origin, independently supplied runtime-manifest digest, archive and per-file inventory, Brave signature, and media-gate result, then injects configuration through a temporary resource without modifying the repository template.
 
 ## Security Principles
 

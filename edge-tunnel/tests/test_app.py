@@ -282,6 +282,38 @@ async def test_ticket_is_one_use_and_cannot_open_a_different_target(settings):
     assert policy.calls == [("example.com", 80)]
 
 
+@pytest.mark.asyncio
+async def test_tunnel_capacity_fails_closed_without_opening_a_third_target(settings):
+    policy = Policy()
+    connector_calls = []
+
+    async def connector(address, port, family):
+        connector_calls.append((address, port, family))
+        return asyncio.StreamReader(), NullWriter()
+
+    app = create_app(settings, policy=policy, connector=connector)
+    async with TestClient(TestServer(app)) as client:
+        first = await client.ws_connect(
+            "/v1/tunnel",
+            headers={"Authorization": f"Bearer {make_ticket(settings.ticket_secret, jti='capacity-1')}"},
+        )
+        second = await client.ws_connect(
+            "/v1/tunnel",
+            headers={"Authorization": f"Bearer {make_ticket(settings.ticket_secret, jti='capacity-2')}"},
+        )
+        with pytest.raises(ClientResponseError) as error:
+            await client.ws_connect(
+                "/v1/tunnel",
+                headers={"Authorization": f"Bearer {make_ticket(settings.ticket_secret, jti='capacity-3')}"},
+            )
+        await first.close()
+        await second.close()
+
+    assert error.value.status == 503
+    assert len(connector_calls) == 2
+    assert policy.calls == [("example.com", 443), ("example.com", 443)]
+
+
 class NullWriter:
     def write(self, _data):
         pass

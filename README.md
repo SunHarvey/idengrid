@@ -92,11 +92,17 @@ pytest -q windows-client/tests/Static
 完整 WPF 构建需要 Windows 和 .NET 10：
 
 ```powershell
-$env:IDENGRID_API_BASE_URL = "https://api.example.com/"
-.\windows-client\Build-IdenGrid-Windows.ps1
+$env:IDENGRID_API_BASE_URL = "https://control.example.invalid/"
+$expectedRuntimeManifestSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+.\windows-client\Build-IdenGrid-Windows.ps1 `
+  -BrowserRuntimePath "C:\Build\Input\BraveRuntime" `
+  -BrowserRuntimeManifestPath "C:\Build\Input\brave-runtime-manifest.json" `
+  -ExpectedRuntimeManifestSha256 $expectedRuntimeManifestSha256 `
+  -BrowserRuntimeArchivePath "C:\Build\Input\brave-runtime.zip" `
+  -MediaGateResultPath "C:\Build\Input\brave-media-gate.json"
 ```
 
-构建脚本会验证 HTTPS 地址，并通过临时配置资源完成注入，不修改仓库中的示例配置。
+示例中的域名、路径和摘要都是占位值。构建脚本会验证 HTTPS 地址、独立提供的运行时清单摘要、归档与逐文件清单、Brave 签名和媒体门禁结果，并通过临时配置资源完成注入，不修改仓库中的示例配置。
 
 ## 安全原则
 

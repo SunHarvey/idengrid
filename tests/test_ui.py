@@ -238,7 +238,14 @@ def test_admin_nodes_has_node_initiated_approval_flow(system):
     assert "machine_fingerprint" in page.text
     assert "等待管理员批准" in page.text
     assert "待审批申请" in page.text
-    assert "接入历史记录" in page.text
+    assert "接入申请历史（不代表节点状态）" in page.text
+    assert "这里记录的是接入申请过程，不是已上线节点的运行状态" in page.text
+    assert "正式节点请查看下方“Edge 节点”" in page.text
+    assert "该接入申请未完成身份校验，已过期；未创建节点，不影响已上线节点。" in page.text
+    assert "registrationBadge(item.status)" in page.text
+    assert "make('details',undefined,'registration-history')" in page.text
+    assert "historyPanel.appendChild(renderCard(item,false))" in page.text
+    assert "接入历史记录" not in page.text
     assert "已批准并接入，无需操作" in page.text
     assert "edge_node_id" in page.text
     assert "高级手动登记" in page.text
@@ -263,6 +270,56 @@ def test_users_and_nodes_use_one_entity_per_row_responsive_layout(system):
         in page.text
     )
     assert "@media(max-width:900px)" in page.text
+
+
+def test_admin_refresh_restores_the_selected_tab(system):
+    client, _ = system
+    page = client.get("/")
+
+    assert "function activateAdminTab" in page.text
+    assert "window.location.hash.slice(1)" in page.text
+    assert "history.replaceState(null,'',`#${selected.dataset.tab}`)" in page.text
+    assert "activateAdminTab(window.location.hash.slice(1),false)" in page.text
+
+
+def test_store_editor_is_compact_and_connection_details_are_collapsed(system):
+    client, _ = system
+    page = client.get("/")
+
+    assert (
+        "grid-template-columns:minmax(140px,220px) minmax(170px,220px) max-content"
+        in page.text
+    )
+    assert "lease-details" in page.text
+    assert "查看连接详情" in page.text
+    assert "formatAuditTime(lease.last_heartbeat_at)" in page.text
+    assert "formatAuditTime(lease.expires_at)" in page.text
+    assert "最近心跳：${lease.last_heartbeat_at}" not in page.text
+    assert "到期：${lease.expires_at}" not in page.text
+
+
+def test_user_row_has_compact_password_and_local_spacing_only(system):
+    client, _ = system
+    page = client.get("/")
+
+    assert (
+        ".user-row{grid-template-columns:minmax(90px,95px) minmax(100px,110px) "
+        "240px 296px max-content"
+        in page.text
+    )
+    assert ".user-row{gap:8px}" in page.text
+    assert ".password-section{grid-area:password;min-width:0;display:grid;grid-template-columns:minmax(130px,160px) max-content;align-items:end;gap:12px;padding-inline:8px}" in page.text
+    assert ".password-reset{min-width:0}" in page.text
+    assert ".user-row .node-grants{grid-template-columns:repeat(2,minmax(100px,1fr));max-width:240px}" in page.text
+    assert ".user-actions{grid-area:actions;flex-wrap:nowrap;align-self:end;margin-bottom:2px}" in page.text
+    assert "@container entity-list (max-width:1220px){.user-row" not in page.text
+    assert "@container entity-list (max-width:980px)" in page.text
+    assert ".password-section{width:100%;grid-template-columns:minmax(0,1fr);padding-inline:0;gap:8px}" in page.text
+    assert ".password-section button{justify-self:start}" in page.text
+    assert ".user-actions{flex-wrap:wrap}" in page.text
+    assert ".user-row .node-grants{grid-template-columns:minmax(0,1fr);max-width:none;width:100%}" in page.text
+    assert ".store-row{grid-template-columns:minmax(110px,180px) minmax(240px,1fr) auto max-content" in page.text
+    assert ".node-row{grid-template-columns:minmax(120px,.5fr) minmax(250px,1fr) minmax(360px,1.45fr) max-content" in page.text
 
 
 def test_node_metrics_are_formatted_for_humans(system):

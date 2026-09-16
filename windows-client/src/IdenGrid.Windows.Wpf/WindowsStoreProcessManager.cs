@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -8,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 using IdenGrid.Core;
 
 namespace IdenGrid.Windows.Wpf;
@@ -24,9 +26,13 @@ public enum StoreRuntimeState
 
 public sealed class WindowsStoreProcessManager
 {
-    private readonly Dictionary<string, RunningStore> _running = [];
-    private readonly Dictionary<string, StoreRuntimeState> _states = [];
-    private readonly Dictionary<string, long?> _edgeLatencies = [];
+    private readonly ConcurrentDictionary<string, StartingStore> _starting = [];
+    private readonly ConcurrentDictionary<string, RunningStore> _running = [];
+    private readonly ConcurrentDictionary<string, StoreRuntimeState> _states = [];
+    private readonly ConcurrentDictionary<string, long?> _edgeLatencies = [];
+    private readonly SemaphoreSlim _launchRegistrationGate = new(1, 1);
+    private int _drainingLaunches;
+    private long _drainGeneration;
     private readonly string _applicationRoot;
     private readonly Uri _centralUrl;
     private readonly string _deviceId;
@@ -52,19 +58,98 @@ public sealed class WindowsStoreProcessManager
 
     public async Task LaunchAsync(StoreDto store, string accessToken, CancellationToken cancellationToken = default)
     {
-        if (_running.TryGetValue(store.Id, out var existing))
+        cancellationToken.ThrowIfCancellationRequested();
+        var observedDrainGeneration = Volatile.Read(ref _drainGeneration);
+        if (Volatile.Read(ref _drainingLaunches) != 0)
+            throw new InvalidOperationException("正在关闭全部店铺，无法启动新店铺");
+        while (_running.TryGetValue(store.Id, out var existing))
         {
-            Activate(existing.Browser);
+            var activateExisting = false;
+            lock (existing.LifecycleGate)
+            {
+                activateExisting = !existing.CleanupClaimed
+                    && !existing.Agent.HasExited
+                    && !existing.Browser.HasExited;
+            }
+            if (activateExisting)
+            {
+                Activate(existing.Browser);
+                return;
+            }
+            if (!existing.CleanupClaimed)
+                HandleUnexpectedExit(existing, "店铺进程已意外退出");
+            await existing.CleanupCompletion.Task.WaitAsync(cancellationToken);
+        }
+
+        StartingStore candidateStartup;
+        StartingStore startup;
+        await _launchRegistrationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (Volatile.Read(ref _drainingLaunches) != 0
+                || Volatile.Read(ref _drainGeneration) != observedDrainGeneration)
+                throw new InvalidOperationException("关闭全部店铺期间的启动请求已取消");
+            candidateStartup = new StartingStore(cancellationToken);
+            startup = _starting.GetOrAdd(store.Id, candidateStartup);
+        }
+        finally
+        {
+            _launchRegistrationGate.Release();
+        }
+        if (!ReferenceEquals(startup, candidateStartup))
+        {
+            candidateStartup.Dispose();
+            await startup.Completion.Task.WaitAsync(cancellationToken);
+            var startedRecord = startup.RunningRecord;
+            if (startedRecord is null)
+                throw new InvalidOperationException("店铺启动未成功");
+            lock (startedRecord.LifecycleGate)
+            {
+                if (!_running.TryGetValue(store.Id, out var registered)
+                    || !ReferenceEquals(registered, startedRecord)
+                    || startedRecord.CleanupClaimed
+                    || startedRecord.Agent.HasExited
+                    || startedRecord.Browser.HasExited)
+                    throw new InvalidOperationException("店铺启动未能保持运行");
+            }
+            Activate(startedRecord.Browser);
             return;
         }
 
+        try
+        {
+            await LaunchOwnedAsync(store, accessToken, startup);
+        }
+        finally
+        {
+            try
+            {
+                ((ICollection<KeyValuePair<string, StartingStore>>)_starting).Remove(
+                    new KeyValuePair<string, StartingStore>(store.Id, startup));
+            }
+            finally
+            {
+                startup.Completion.TrySetResult();
+                startup.Dispose();
+            }
+        }
+    }
+
+    private async Task LaunchOwnedAsync(StoreDto store, string accessToken, StartingStore startup)
+    {
+        var cancellationToken = startup.Cancellation.Token;
+        startup.Cancellation.Token.ThrowIfCancellationRequested();
         var storeRoot = Path.Combine(_applicationRoot, "Stores", $"store-{store.Id}");
         var runtime = Path.Combine(storeRoot, "Runtime");
         var downloads = Path.Combine(storeRoot, "Downloads");
         var profile = WindowsProfileLayout.UserDataDirectory(_applicationRoot, store.Id);
+        startup.Cancellation.Token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(runtime);
+        startup.Cancellation.Token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(downloads);
+        startup.Cancellation.Token.ThrowIfCancellationRequested();
         Directory.CreateDirectory(profile);
+        startup.Cancellation.Token.ThrowIfCancellationRequested();
         var extension = PrepareStoreExtension(store, storeRoot);
 
         var lockPath = Path.Combine(runtime, "store.lock");
@@ -73,15 +158,19 @@ public sealed class WindowsStoreProcessManager
         Process? browser = null;
         CancellationTokenSource? identityCancellation = null;
         nint iconHandle = 0;
+        RunningStore? record = null;
         var pipeName = $"IdenGrid-store-{store.Id}-{Guid.NewGuid():N}";
         var capability = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         try
         {
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             lockHandle = new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             await lockHandle.WriteAsync(Encoding.ASCII.GetBytes($"{Environment.ProcessId}\n"), cancellationToken);
             await lockHandle.FlushAsync(cancellationToken);
 
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             SetState(store.Id, StoreRuntimeState.StartingAgent);
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             agent = StartAgent(store, accessToken, pipeName, capability);
             var status = await WaitForStatusAsync(pipeName, capability, TimeSpan.FromSeconds(25), cancellationToken);
             if (status.Status != "connected" || status.DeviceId != _deviceId ||
@@ -90,21 +179,26 @@ public sealed class WindowsStoreProcessManager
                 throw new InvalidOperationException("Agent状态无效");
             }
 
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             SetState(store.Id, StoreRuntimeState.VerifyingEgress);
             await VerifyEgressAsync(status.SocksPort, store.ExpectedPublicIpv4, cancellationToken);
 
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             SetState(store.Id, StoreRuntimeState.LaunchingBrowser);
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             browser = StartBrowser(store, profile, downloads, extension, status.SocksPort);
             identityCancellation = new CancellationTokenSource();
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             var iconPath = StoreTaskbarIcon.Create(storeRoot, store.Name, store.Id);
             iconHandle = LoadStoreIcon(iconPath);
             await WaitForMainWindowAsync(browser, TimeSpan.FromSeconds(12), cancellationToken);
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             _ = MaintainBrowserIdentityAsync(
                 browser,
                 store.Name,
                 iconHandle,
                 identityCancellation.Token);
-            var record = new RunningStore(
+            var runningRecord = new RunningStore(
                 store.Id,
                 agent,
                 browser,
@@ -114,54 +208,169 @@ public sealed class WindowsStoreProcessManager
                 capability,
                 identityCancellation,
                 iconHandle);
-            _running[store.Id] = record;
+            record = runningRecord;
+            agent.Exited += (_, _) => HandleUnexpectedExit(runningRecord, "Agent 已意外退出");
+            browser.Exited += (_, _) => HandleUnexpectedExit(runningRecord, "浏览器已意外退出");
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
+            if (!_running.TryAdd(store.Id, runningRecord))
+                throw new InvalidOperationException("店铺已在运行");
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             agent.EnableRaisingEvents = true;
+            startup.Cancellation.Token.ThrowIfCancellationRequested();
             browser.EnableRaisingEvents = true;
-            agent.Exited += (_, _) => HandleUnexpectedExit(store.Id, "Agent 已意外退出");
-            browser.Exited += (_, _) => HandleUnexpectedExit(store.Id, "浏览器已意外退出");
-            SetState(store.Id, StoreRuntimeState.Running);
-            _ = PollEdgeLatencyAsync(record, identityCancellation.Token);
+            lock (runningRecord.LifecycleGate)
+            {
+                startup.Cancellation.Token.ThrowIfCancellationRequested();
+                if (!_running.TryGetValue(store.Id, out var registered)
+                    || !ReferenceEquals(registered, runningRecord)
+                    || runningRecord.CleanupClaimed
+                    || agent.HasExited
+                    || browser.HasExited)
+                    throw new InvalidOperationException("店铺进程未能保持运行");
+                _states[store.Id] = StoreRuntimeState.Running;
+                startup.RunningRecord = runningRecord;
+            }
+            StateChanged?.Invoke(store.Id);
+            _ = PollEdgeLatencyAsync(runningRecord, identityCancellation.Token);
         }
-        catch
+        catch (Exception error)
         {
-            identityCancellation?.Cancel();
-            if (browser is not null) await StopProcessAsync(browser, TimeSpan.FromSeconds(2));
-            if (agent is not null) await StopProcessAsync(agent, TimeSpan.FromSeconds(2));
-            if (iconHandle != 0) _ = DestroyIcon(iconHandle);
-            identityCancellation?.Dispose();
-            lockHandle?.Dispose();
-            TryDelete(lockPath);
-            SetState(store.Id, StoreRuntimeState.Failed);
+            WriteLaunchDiagnostic(store.Id, State(store.Id), error);
+            if (record is not null)
+            {
+                if (TryClaimCleanup(record))
+                {
+                    try
+                    {
+                        try { record.Agent.EnableRaisingEvents = false; } catch { }
+                        try { record.Browser.EnableRaisingEvents = false; } catch { }
+                        try { record.IdentityCancellation.Cancel(); } catch { }
+                        try { await StopBrowserAsync(record.Browser); } catch { }
+                        try { await StopProcessAsync(record.Agent, TimeSpan.FromSeconds(2)); } catch { }
+                    }
+                    finally
+                    {
+                        CleanupRecord(record, StoreRuntimeState.Failed);
+                    }
+                }
+                else
+                {
+                    await record.CleanupCompletion.Task;
+                }
+            }
+            else
+            {
+                try
+                {
+                    try { identityCancellation?.Cancel(); } catch { }
+                    if (browser is not null)
+                    {
+                        try { await StopBrowserAsync(browser); } catch { }
+                    }
+                    if (agent is not null)
+                    {
+                        try { await StopProcessAsync(agent, TimeSpan.FromSeconds(2)); } catch { }
+                    }
+                }
+                finally
+                {
+                    if (iconHandle != 0)
+                    {
+                        try { _ = DestroyIcon(iconHandle); } catch { }
+                    }
+                    try { identityCancellation?.Dispose(); } catch { }
+                    try { lockHandle?.Dispose(); } catch { }
+                    TryDelete(lockPath);
+                    SetState(store.Id, StoreRuntimeState.Failed);
+                }
+            }
             throw;
         }
     }
 
     public async Task CloseAsync(string storeId)
     {
-        if (!_running.Remove(storeId, out var record))
+        var closeSlot = new StartingStore(CancellationToken.None);
+        try
+        {
+            while (true)
+            {
+                var startup = _starting.GetOrAdd(storeId, closeSlot);
+                if (ReferenceEquals(startup, closeSlot)) break;
+                try { startup.Cancellation.Cancel(); }
+                catch (ObjectDisposedException) { }
+                await startup.Completion.Task;
+            }
+
+            await CloseRunningAsync(storeId);
+        }
+        finally
+        {
+            try
+            {
+                ((ICollection<KeyValuePair<string, StartingStore>>)_starting).Remove(
+                    new KeyValuePair<string, StartingStore>(storeId, closeSlot));
+            }
+            finally
+            {
+                closeSlot.Completion.TrySetResult();
+                closeSlot.Dispose();
+            }
+        }
+    }
+
+    private async Task CloseRunningAsync(string storeId)
+    {
+        if (!_running.TryGetValue(storeId, out var record))
         {
             SetState(storeId, StoreRuntimeState.Idle);
             return;
         }
 
-        record.Agent.EnableRaisingEvents = false;
-        record.Browser.EnableRaisingEvents = false;
-        record.IdentityCancellation.Cancel();
-        await StopBrowserAsync(record.Browser);
-        await RequestAsync(record.PipeName, record.Capability, "shutdown", CancellationToken.None)
-            .ContinueWith(_ => { }, TaskScheduler.Default);
-        await StopProcessAsync(record.Agent, TimeSpan.FromSeconds(3));
-        record.LockHandle.Dispose();
-        if (record.IconHandle != 0) _ = DestroyIcon(record.IconHandle);
-        record.IdentityCancellation.Dispose();
-        TryDelete(record.LockPath);
-        _edgeLatencies.Remove(storeId);
-        SetState(storeId, StoreRuntimeState.Idle);
+        if (!TryClaimCleanup(record))
+        {
+            await record.CleanupCompletion.Task;
+            return;
+        }
+
+        Exception? stopError = null;
+        try
+        {
+            try { record.Agent.EnableRaisingEvents = false; } catch { }
+            try { record.Browser.EnableRaisingEvents = false; } catch { }
+            try { record.IdentityCancellation.Cancel(); } catch { }
+            try { await StopBrowserAsync(record.Browser); }
+            catch (Exception error) { stopError = error; }
+            try
+            {
+                _ = await RequestAsync(record.PipeName, record.Capability, "shutdown", CancellationToken.None);
+            }
+            catch { }
+            try { await StopProcessAsync(record.Agent, TimeSpan.FromSeconds(3)); }
+            catch (Exception error) { stopError ??= error; }
+        }
+        finally
+        {
+            CleanupRecord(record, StoreRuntimeState.Idle);
+        }
+        if (stopError is not null) throw stopError;
     }
 
     public async Task QuitAllAsync()
     {
-        foreach (var storeId in _running.Keys.ToArray()) await CloseAsync(storeId);
+        await _launchRegistrationGate.WaitAsync();
+        Interlocked.Increment(ref _drainGeneration);
+        Volatile.Write(ref _drainingLaunches, 1);
+        try
+        {
+            var storeIds = _starting.Keys.Union(_running.Keys).Distinct().ToArray();
+            foreach (var storeId in storeIds) await CloseAsync(storeId);
+        }
+        finally
+        {
+            Volatile.Write(ref _drainingLaunches, 0);
+            _launchRegistrationGate.Release();
+        }
     }
 
     public async Task UpdateAccessTokenAsync(string nativeAccessToken)
@@ -272,13 +481,10 @@ public sealed class WindowsStoreProcessManager
         string extension,
         int socksPort)
     {
-        var executable = ResolveExecutable(
-            "IDENGRID_CHROMIUM_PATH",
-            Path.Combine(AppContext.BaseDirectory, "Components", "Browser", "chrome.exe"),
-            "缺少内置浏览器");
+        ConfigureBrowserProfile(profile, downloads);
+        var executable = ResolveBrowserExecutable();
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         start.ArgumentList.Add($"--user-data-dir={profile}");
-        start.ArgumentList.Add($"--downloads-path={downloads}");
         start.ArgumentList.Add($"--proxy-server=socks5://127.0.0.1:{socksPort}");
         start.ArgumentList.Add("--proxy-bypass-list=<-loopback>");
         start.ArgumentList.Add($"--load-extension={extension}");
@@ -288,7 +494,93 @@ public sealed class WindowsStoreProcessManager
         start.ArgumentList.Add("--no-first-run");
         start.ArgumentList.Add("--no-default-browser-check");
         start.ArgumentList.Add("--disable-sync");
+        start.ArgumentList.Add("--disable-background-mode");
+        start.ArgumentList.Add("--restore-last-session");
         return Process.Start(start) ?? throw new InvalidOperationException($"无法启动{store.Name}浏览器");
+    }
+
+    private static void ConfigureBrowserProfile(string profile, string downloads)
+    {
+        var defaultProfile = Path.Combine(profile, "Default");
+        Directory.CreateDirectory(defaultProfile);
+        Directory.CreateDirectory(downloads);
+        var preferencesPath = Path.Combine(defaultProfile, "Preferences");
+        JsonObject preferences = File.Exists(preferencesPath)
+            ? JsonNode.Parse(File.ReadAllText(preferencesPath))?.AsObject() ?? new JsonObject()
+            : new JsonObject();
+        var download = preferences["download"] as JsonObject ?? new JsonObject();
+        download["default_directory"] = Path.GetFullPath(downloads);
+        download["prompt_for_download"] = false;
+        download["directory_upgrade"] = true;
+        preferences["download"] = download;
+        var savefile = preferences["savefile"] as JsonObject ?? new JsonObject();
+        savefile["default_directory"] = Path.GetFullPath(downloads);
+        preferences["savefile"] = savefile;
+        var session = preferences["session"] as JsonObject ?? new JsonObject();
+        session["restore_on_startup"] = 1;
+        preferences["session"] = session;
+        var backgroundMode = preferences["background_mode"] as JsonObject ?? new JsonObject();
+        backgroundMode["enabled"] = false;
+        backgroundMode["enabled_on_next_startup"] = false;
+        preferences["background_mode"] = backgroundMode;
+        var brave = preferences["brave"] as JsonObject ?? new JsonObject();
+        brave["enable_window_closing_confirm"] = false;
+        preferences["brave"] = brave;
+        var stagingPath = preferencesPath + ".idengrid-staging";
+        File.WriteAllText(stagingPath, preferences.ToJsonString());
+        File.Move(stagingPath, preferencesPath, true);
+        ConfigureBrowserLocalState(profile);
+    }
+
+    private static void ConfigureBrowserLocalState(string profile)
+    {
+        var localStatePath = Path.Combine(profile, "Local State");
+        JsonObject localState = File.Exists(localStatePath)
+            ? JsonNode.Parse(File.ReadAllText(localStatePath))?.AsObject() ?? new JsonObject()
+            : new JsonObject();
+        var brave = localState["brave"] as JsonObject ?? new JsonObject();
+        var p3a = brave["p3a"] as JsonObject ?? new JsonObject();
+        p3a["enabled"] = false;
+        p3a["notice_acknowledged"] = true;
+        brave["p3a"] = p3a;
+        brave["dont_ask_for_crash_reporting"] = true;
+        localState["brave"] = brave;
+        var metrics = localState["user_experience_metrics"] as JsonObject ?? new JsonObject();
+        metrics["reporting_enabled"] = false;
+        localState["user_experience_metrics"] = metrics;
+        var stagingPath = localStatePath + ".idengrid-staging";
+        File.WriteAllText(stagingPath, localState.ToJsonString());
+        File.Move(stagingPath, localStatePath, true);
+    }
+
+    private static string ResolveBrowserExecutable()
+    {
+        var configured = Environment.GetEnvironmentVariable("IDENGRID_BROWSER_PATH");
+        if (string.IsNullOrWhiteSpace(configured))
+            configured = Environment.GetEnvironmentVariable("IDENGRID_CHROMIUM_PATH");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            if (!File.Exists(configured)) throw new FileNotFoundException("缺少已配置浏览器", configured);
+            return Path.GetFullPath(configured);
+        }
+
+        var runtime = Path.Combine(AppContext.BaseDirectory, "Components", "Browser");
+        var manifestPath = Path.Combine(runtime, "idengrid-runtime-manifest.json");
+        if (File.Exists(manifestPath))
+        {
+            using var manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            var executableName = manifest.RootElement.GetProperty("browser_executable").GetString();
+            if (string.IsNullOrWhiteSpace(executableName) || Path.GetFileName(executableName) != executableName)
+                throw new InvalidDataException("浏览器运行时清单中的可执行文件名无效");
+            var declared = Path.Combine(runtime, executableName);
+            if (!File.Exists(declared)) throw new FileNotFoundException("缺少清单声明的浏览器", declared);
+            return Path.GetFullPath(declared);
+        }
+
+        return ResolveExecutable(
+            "IDENGRID_CHROMIUM_PATH",
+            Path.Combine(runtime, "chrome.exe"),
+            "缺少内置浏览器");
     }
 
     private static async Task VerifyEgressAsync(
@@ -375,12 +667,12 @@ public sealed class WindowsStoreProcessManager
                     "status",
                     cancellationToken);
                 var latency = status.EdgeLatency;
-                _edgeLatencies[record.StoreId] = latency is not null
+                if (!PublishEdgeLatency(record, latency is not null
                     && latency.Source == "websocket_ping"
                     && latency.State is "fresh" or "degraded"
                         ? latency.EwmaRttMs ?? latency.LatestRttMs
-                        : null;
-                StateChanged?.Invoke(record.StoreId);
+                        : null))
+                    return;
             }
             catch (OperationCanceledException)
             {
@@ -388,30 +680,78 @@ public sealed class WindowsStoreProcessManager
             }
             catch (IOException)
             {
-                _edgeLatencies[record.StoreId] = null;
-                StateChanged?.Invoke(record.StoreId);
+                if (!PublishEdgeLatency(record, null)) return;
             }
             catch (TimeoutException)
             {
-                _edgeLatencies[record.StoreId] = null;
-                StateChanged?.Invoke(record.StoreId);
+                if (!PublishEdgeLatency(record, null)) return;
             }
         }
     }
 
-    private async void HandleUnexpectedExit(string storeId, string reason)
+    private bool PublishEdgeLatency(RunningStore record, long? latency)
     {
-        if (!_running.Remove(storeId, out var record)) return;
-        record.IdentityCancellation.Cancel();
-        await StopProcessAsync(record.Browser, TimeSpan.FromSeconds(1));
-        await StopProcessAsync(record.Agent, TimeSpan.FromSeconds(1));
-        record.LockHandle.Dispose();
-        if (record.IconHandle != 0) _ = DestroyIcon(record.IconHandle);
-        record.IdentityCancellation.Dispose();
-        TryDelete(record.LockPath);
-        _edgeLatencies.Remove(storeId);
-        SetState(storeId, StoreRuntimeState.Failed);
-        _ = reason;
+        lock (record.LifecycleGate)
+        {
+            if (record.CleanupClaimed
+                || !_running.TryGetValue(record.StoreId, out var registered)
+                || !ReferenceEquals(registered, record))
+                return false;
+            _edgeLatencies[record.StoreId] = latency;
+        }
+        StateChanged?.Invoke(record.StoreId);
+        return true;
+    }
+
+    private async void HandleUnexpectedExit(RunningStore record, string reason)
+    {
+        try
+        {
+            if (!TryClaimCleanup(record)) return;
+            try
+            {
+                try { record.IdentityCancellation.Cancel(); } catch { }
+                try { await StopBrowserAsync(record.Browser); } catch { }
+                try { await StopProcessAsync(record.Agent, TimeSpan.FromSeconds(1)); } catch { }
+            }
+            finally
+            {
+                CleanupRecord(record, StoreRuntimeState.Failed);
+                _ = reason;
+            }
+        }
+        catch { } // Async-void process event handlers must never leak exceptions.
+    }
+
+    private static bool TryClaimCleanup(RunningStore record)
+    {
+        lock (record.LifecycleGate)
+        {
+            return record.TryClaimCleanup();
+        }
+    }
+
+    private void CleanupRecord(RunningStore record, StoreRuntimeState finalState)
+    {
+        try
+        {
+            try { record.LockHandle.Dispose(); } catch { }
+            if (record.IconHandle != 0)
+            {
+                try { _ = DestroyIcon(record.IconHandle); } catch { }
+            }
+            try { record.IdentityCancellation.Dispose(); } catch { }
+            TryDelete(record.LockPath);
+            _edgeLatencies.TryRemove(record.StoreId, out _);
+            _states[record.StoreId] = finalState;
+            try { StateChanged?.Invoke(record.StoreId); } catch { }
+        }
+        finally
+        {
+            ((ICollection<KeyValuePair<string, RunningStore>>)_running).Remove(
+                new KeyValuePair<string, RunningStore>(record.StoreId, record));
+            record.CleanupCompletion.TrySetResult();
+        }
     }
 
     private void SetState(string storeId, StoreRuntimeState state)
@@ -423,10 +763,30 @@ public sealed class WindowsStoreProcessManager
     private static async Task StopBrowserAsync(Process process)
     {
         if (process.HasExited) return;
-        _ = process.CloseMainWindow();
-        if (await WaitForExitAsync(process, TimeSpan.FromSeconds(5))) return;
+        if (CloseBrowserWindows(process) == 0) _ = process.CloseMainWindow();
+        if (await WaitForExitAsync(process, TimeSpan.FromSeconds(10))) return;
         process.Kill(true);
         await WaitForExitAsync(process, TimeSpan.FromSeconds(3));
+    }
+
+    private static int CloseBrowserWindows(Process process)
+    {
+        process.Refresh();
+        if (process.HasExited) return 0;
+        var processId = (uint)process.Id;
+        var windows = new List<nint>();
+        _ = EnumWindows((windowHandle, lParam) =>
+        {
+            _ = lParam;
+            _ = GetWindowThreadProcessId(windowHandle, out var windowProcessId);
+            if (windowProcessId == processId && IsWindowVisible(windowHandle))
+                windows.Add(windowHandle);
+            return true;
+        }, 0);
+        var sent = 0;
+        foreach (var windowHandle in windows)
+            if (PostMessage(windowHandle, WM_CLOSE, 0, 0)) sent++;
+        return sent;
     }
 
     private static async Task StopProcessAsync(Process process, TimeSpan timeout)
@@ -505,9 +865,37 @@ public sealed class WindowsStoreProcessManager
             ? LoadImage(0, iconPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
             : 0;
 
+    private void WriteLaunchDiagnostic(string storeId, StoreRuntimeState phase, Exception error)
+    {
+        try
+        {
+            var directory = Path.Combine(_applicationRoot, "Logs");
+            Directory.CreateDirectory(directory);
+            var entry = JsonSerializer.Serialize(new
+            {
+                timestamp_utc = DateTimeOffset.UtcNow,
+                store_id = storeId,
+                phase = phase.ToString(),
+                exception_type = error.GetType().FullName,
+                message = error.Message,
+                inner_exception_type = error.InnerException?.GetType().FullName,
+                inner_message = error.InnerException?.Message,
+            });
+            File.AppendAllText(Path.Combine(directory, "client-launch.jsonl"), entry + Environment.NewLine);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
     private static void TryDelete(string path)
     {
-        try { File.Delete(path); } catch (IOException) { }
+        try { File.Delete(path); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     [DllImport("user32.dll")]
@@ -516,6 +904,21 @@ public sealed class WindowsStoreProcessManager
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(nint windowHandle, int command);
 
+    private delegate bool EnumWindowsCallback(nint windowHandle, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsCallback callback, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(nint windowHandle, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(nint windowHandle);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessage(nint windowHandle, uint message, nint wParam, nint lParam);
+
+    private const uint WM_CLOSE = 0x0010;
     private const uint WM_SETICON = 0x0080;
     private const nint ICON_SMALL = 0;
     private const nint ICON_BIG = 1;
@@ -541,6 +944,21 @@ public sealed class WindowsStoreProcessManager
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(nint iconHandle);
 
+    private sealed class StartingStore : IDisposable
+    {
+        public StartingStore(CancellationToken cancellationToken)
+        {
+            Cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        }
+
+        public CancellationTokenSource Cancellation { get; }
+        public TaskCompletionSource Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public RunningStore? RunningRecord { get; set; }
+
+        public void Dispose() => Cancellation.Dispose();
+    }
+
     private sealed record RunningStore(
         string StoreId,
         Process Agent,
@@ -550,7 +968,18 @@ public sealed class WindowsStoreProcessManager
         string PipeName,
         string Capability,
         CancellationTokenSource IdentityCancellation,
-        nint IconHandle);
+        nint IconHandle)
+    {
+        private int _cleanupClaimed;
+
+        public object LifecycleGate { get; } = new();
+        public TaskCompletionSource CleanupCompletion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool CleanupClaimed => Volatile.Read(ref _cleanupClaimed) != 0;
+
+        public bool TryClaimCleanup() =>
+            Interlocked.CompareExchange(ref _cleanupClaimed, 1, 0) == 0;
+    }
 
     private sealed record AgentStatus(
         [property: JsonPropertyName("status")] string Status,
