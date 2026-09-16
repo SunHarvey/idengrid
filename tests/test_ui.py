@@ -304,13 +304,13 @@ def test_user_row_has_compact_password_and_local_spacing_only(system):
 
     assert (
         ".user-row{grid-template-columns:minmax(90px,95px) minmax(100px,110px) "
-        "240px 296px max-content"
+        "252px 312px max-content"
         in page.text
     )
     assert ".user-row{gap:8px}" in page.text
-    assert ".password-section{grid-area:password;min-width:0;display:grid;grid-template-columns:minmax(130px,160px) max-content;align-items:end;gap:12px;padding-inline:8px}" in page.text
+    assert ".password-section{grid-area:password;min-width:0;display:grid;grid-template-columns:minmax(130px,160px) max-content;align-items:end;gap:12px;padding-inline:16px}" in page.text
     assert ".password-reset{min-width:0}" in page.text
-    assert ".user-row .node-grants{grid-template-columns:repeat(2,minmax(100px,1fr));max-width:240px}" in page.text
+    assert ".user-row .node-grants{grid-template-columns:repeat(2,minmax(100px,1fr));column-gap:24px;row-gap:8px;max-width:252px}" in page.text
     assert ".user-actions{grid-area:actions;flex-wrap:nowrap;align-self:end;margin-bottom:2px}" in page.text
     assert "@container entity-list (max-width:1220px){.user-row" not in page.text
     assert "@container entity-list (max-width:980px)" in page.text
