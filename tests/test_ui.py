@@ -142,7 +142,7 @@ def test_admin_dashboard_has_complete_safe_store_node_and_audit_management(syste
     assert "auditPage=0" in page.text
     assert "offset" in page.text
     assert "刷新最新信息" in page.text
-    assert "confirm(" in page.text
+    assert "await confirmAction(" in page.text
     assert ".innerHTML" not in page.text
     assert "createElement" in page.text
     assert "textContent" in page.text
@@ -170,6 +170,26 @@ def test_admin_console_has_consistent_page_layout_contracts(system):
     assert "onboarding-panel" in page
     assert '<details class="onboarding-panel">' in page
     assert '<details class="onboarding-panel" open>' not in page
+
+
+def test_admin_actions_use_branded_confirmation_dialog(system):
+    client, _ = system
+    page = client.get("/").text
+
+    for marker in [
+        'id="actionDialog"',
+        'id="actionDialogTitle"',
+        'id="actionDialogMessage"',
+        'id="actionDialogCancel"',
+        'id="actionDialogConfirm"',
+        "function confirmAction(",
+        "await confirmAction(",
+        "aria-labelledby=\"actionDialogTitle\"",
+    ]:
+        assert marker in page
+    assert "confirm(" not in page
+    assert ".action-dialog::backdrop" in page
+    assert "class=\"dialog-brand\"" in page
 
 
 def test_store_management_is_fully_chinese_and_one_store_per_row(system):
