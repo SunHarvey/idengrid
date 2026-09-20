@@ -3,8 +3,17 @@ from __future__ import annotations
 import csv
 import io
 import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from cloudbrowser.models import (
+    NodeEnrollment,
+    NodeRegistrationRequest,
+    StoreConnectionLease,
+)
 
 
 def login(client: TestClient, username: str = "admin", password: str = "Admin-password-123") -> str:
@@ -222,6 +231,143 @@ def test_audit_filters_csv_export_authorization_and_formula_safety(system):
     assert len(rows) == 1
     assert rows[0]["target_id"] == "'=2+2"
     assert client.get("/api/admin/audit.csv", headers=auth(member_token)).status_code == 403
+
+
+def test_lease_activation_paths_lock_parent_store_before_touching_leases():
+    source = (Path(__file__).parents[1] / "cloudbrowser" / "app.py").read_text()
+    for function_name in ("native_store_preflight", "connect_store", "heartbeat_store"):
+        body = source.split(f"def {function_name}(", 1)[1].split("\n    @app.", 1)[0]
+        lock = "accessible_store(db, store_id, user, for_update=True)"
+        assert lock in body
+        assert body.index(lock) < body.index("active_store_lease(")
+    helper = source.split("def accessible_store(", 1)[1].split("def require_online_edge(", 1)[0]
+    assert ".with_for_update()" in helper
+
+
+def test_store_delete_blocks_active_connection_but_removes_connection_history(system):
+    client, _ = system
+    token = login(client)
+    headers = auth(token)
+    store = client.get("/api/admin/stores", headers=headers).json()[0]
+    connected = client.post(
+        f"/api/stores/{store['id']}/connect",
+        headers=headers,
+        json={"device_id": "delete-regression-device"},
+    )
+    assert connected.status_code == 201
+
+    blocked = client.delete(f"/api/admin/stores/{store['id']}", headers=headers)
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == "店铺仍有活动连接，请先释放连接"
+
+    disconnected = client.post(f"/api/stores/{store['id']}/disconnect", headers=headers)
+    assert disconnected.status_code == 200
+    deleted = client.delete(f"/api/admin/stores/{store['id']}", headers=headers)
+    assert deleted.status_code == 204
+    assert store["id"] not in {
+        item["id"] for item in client.get("/api/admin/stores", headers=headers).json()
+    }
+    with client.app.state.db() as db:
+        assert db.scalar(
+            select(StoreConnectionLease.id).where(
+                StoreConnectionLease.id == connected.json()["lease_id"]
+            )
+        ) is None
+
+    event = client.get(
+        "/api/admin/audit?event_type=managed_store.deleted&limit=1", headers=headers
+    ).json()[0]
+    assert event["target_id"] == str(store["id"])
+    assert event["details"] == {"deleted_connection_history": 1}
+
+
+def test_unbound_node_delete_revokes_grants_and_deletes_capabilities(system):
+    client, _ = system
+    token = login(client)
+    headers = auth(token)
+    created = client.post(
+        "/api/admin/edge-nodes",
+        headers=headers,
+        json={
+            "name": "deletable-edge",
+            "endpoint": "https://deletable-edge.example",
+            "shared_secret": "deletable-edge-secret",
+            "expected_public_ipv4": "8.8.8.8",
+        },
+    )
+    assert created.status_code == 201
+    node = created.json()
+    user = client.post(
+        "/api/admin/users",
+        headers=headers,
+        json={"username": "delete-node-user", "password": "Member-password-123"},
+    ).json()
+    assert client.put(
+        f"/api/admin/users/{user['id']}/edge-nodes",
+        headers=headers,
+        json={"node_ids": [node["id"]]},
+    ).status_code == 200
+    assert client.post(
+        f"/api/admin/edge-nodes/{node['id']}/capabilities",
+        headers=headers,
+        json={"name": "delete-test", "config": {}},
+    ).status_code == 201
+    now = datetime.now(UTC)
+    with client.app.state.db() as db:
+        db.add(
+            NodeEnrollment(
+                id="delete-node-enrollment",
+                edge_node_id=node["id"],
+                created_by_user_id=1,
+                token_hash="a" * 64,
+                status="failed",
+                expires_at=now + timedelta(minutes=15),
+            )
+        )
+        db.add(
+            NodeRegistrationRequest(
+                id="delete-node-registration",
+                status="online",
+                public_key_pem="test-public-key",
+                public_key_fingerprint="b" * 64,
+                machine_fingerprint="c" * 64,
+                reported_hostname="delete-node-host",
+                platform="linux",
+                actual_public_ipv4="8.8.8.8",
+                os_name="Test Linux",
+                cpu_count=2,
+                memory_total_bytes=1024,
+                disk_total_bytes=2048,
+                agent_version="test",
+                challenge_expires_at=now + timedelta(minutes=15),
+                edge_node_id=node["id"],
+            )
+        )
+        db.commit()
+
+    deleted = client.delete(f"/api/admin/edge-nodes/{node['id']}", headers=headers)
+    assert deleted.status_code == 204, deleted.text
+    assert node["id"] not in {
+        item["id"] for item in client.get("/api/admin/edge-nodes", headers=headers).json()
+    }
+    grants = client.get(f"/api/admin/users/{user['id']}/edge-nodes", headers=headers)
+    assert grants.json()["node_ids"] == []
+    with client.app.state.db() as db:
+        assert db.get(NodeEnrollment, "delete-node-enrollment") is None
+        registration = db.get(NodeRegistrationRequest, "delete-node-registration")
+        assert registration is not None
+        assert registration.edge_node_id is None
+
+    event = client.get(
+        "/api/admin/audit?event_type=edge_node.deleted&limit=1", headers=headers
+    ).json()[0]
+    assert event["target_id"] == str(node["id"])
+    assert event["details"] == {
+        "revoked_node_grants": 1,
+        "deleted_capabilities": 1,
+        "deleted_enrollments": 1,
+        "detached_registration_requests": 1,
+    }
 
 
 def test_store_and_node_crud_conflicts_are_controlled_and_never_leak_secrets(system):

@@ -187,6 +187,9 @@ def test_store_management_is_fully_chinese_and_one_store_per_row(system):
         "断开此连接",
     ]:
         assert label in page
+    assert "function showCardError(card,message)" in page
+    assert "setAttribute('role','alert')" in page
+    assert "showCardError(card,error.message)" in page
     for english in [">Owner<", ">Unassigned<", "No active lease", "Force release", "Delete ${store.label}"]:
         assert english not in page
     assert "entity-row store-row" in page

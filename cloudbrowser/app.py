@@ -1209,7 +1209,7 @@ def create_app(
         db: Session = Depends(get_db),
     ):
         user, device_session = identity
-        store = accessible_store(db, store_id, user)
+        store = accessible_store(db, store_id, user, for_update=True)
         node = db.get(EdgeNode, store.edge_node_id)
         if not store.enabled or not node.enabled:
             raise HTTPException(status.HTTP_409_CONFLICT, "Store or edge node is disabled")
@@ -2491,14 +2491,58 @@ def create_app(
 
     @app.delete("/api/admin/edge-nodes/{node_id}", status_code=204)
     def delete_edge_node(node_id: int, actor: User = Depends(admin), db: Session = Depends(get_db)):
-        node = db.get(EdgeNode, node_id)
+        node = db.scalar(
+            select(EdgeNode).where(EdgeNode.id == node_id).with_for_update()
+        )
         if node is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Edge node not found")
-        if db.scalar(select(ManagedStore.id).where(ManagedStore.edge_node_id == node.id)):
-            raise HTTPException(status.HTTP_409_CONFLICT, "Edge node is assigned to a store")
-        audit(db, "edge_node.deleted", actor.id, "edge_node", str(node.id))
-        db.delete(node)
-        db.commit()
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "未找到Edge节点")
+        bound_store = db.scalar(
+            select(ManagedStore).where(ManagedStore.edge_node_id == node.id).order_by(ManagedStore.id)
+        )
+        if bound_store is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"节点仍绑定店铺“{bound_store.label}”，请先删除或重新绑定该店铺",
+            )
+        grants = db.scalars(
+            select(UserEdgeNodeGrant).where(UserEdgeNodeGrant.edge_node_id == node.id)
+        ).all()
+        capabilities = db.scalars(
+            select(EdgeCapability).where(EdgeCapability.edge_node_id == node.id)
+        ).all()
+        enrollments = db.scalars(
+            select(NodeEnrollment).where(NodeEnrollment.edge_node_id == node.id)
+        ).all()
+        registration_requests = db.scalars(
+            select(NodeRegistrationRequest).where(NodeRegistrationRequest.edge_node_id == node.id)
+        ).all()
+        try:
+            for item in [*grants, *capabilities, *enrollments]:
+                db.delete(item)
+            for item in registration_requests:
+                item.edge_node_id = None
+            db.flush()
+            audit(
+                db,
+                "edge_node.deleted",
+                actor.id,
+                "edge_node",
+                str(node.id),
+                {
+                    "revoked_node_grants": len(grants),
+                    "deleted_capabilities": len(capabilities),
+                    "deleted_enrollments": len(enrollments),
+                    "detached_registration_requests": len(registration_requests),
+                },
+            )
+            db.delete(node)
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "节点关联状态已变化，请刷新后重试",
+            ) from exc
         return Response(status_code=204)
 
     def serialize_capability(item: EdgeCapability) -> dict:
@@ -2696,16 +2740,36 @@ def create_app(
     def delete_managed_store(
         store_id: int, actor: User = Depends(admin), db: Session = Depends(get_db)
     ):
-        store = db.get(ManagedStore, store_id)
+        store = db.scalar(
+            select(ManagedStore).where(ManagedStore.id == store_id).with_for_update()
+        )
         if store is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Store not found")
-        if db.scalar(
-            select(StoreConnectionLease.id).where(StoreConnectionLease.store_id == store.id)
-        ):
-            raise HTTPException(status.HTTP_409_CONFLICT, "Store has connection history")
-        audit(db, "managed_store.deleted", actor.id, "managed_store", str(store.id))
-        db.delete(store)
-        db.commit()
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "未找到店铺")
+        if active_store_leases(db, store.id):
+            raise HTTPException(status.HTTP_409_CONFLICT, "店铺仍有活动连接，请先释放连接")
+        connection_history = db.scalars(
+            select(StoreConnectionLease).where(StoreConnectionLease.store_id == store.id)
+        ).all()
+        try:
+            for lease in connection_history:
+                db.delete(lease)
+            db.flush()
+            audit(
+                db,
+                "managed_store.deleted",
+                actor.id,
+                "managed_store",
+                str(store.id),
+                {"deleted_connection_history": len(connection_history)},
+            )
+            db.delete(store)
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "店铺连接状态已变化，请刷新后重试",
+            ) from exc
         return Response(status_code=204)
 
     @app.post("/api/admin/stores/{store_id}/force-disconnect")
@@ -2802,7 +2866,20 @@ def create_app(
             for lease in leases
         ]
 
-    def accessible_store(db: Session, store_id: int, user: User) -> ManagedStore:
+    def accessible_store(
+        db: Session,
+        store_id: int,
+        user: User,
+        *,
+        for_update: bool = False,
+    ) -> ManagedStore:
+        locked_store = None
+        if for_update:
+            locked_store = db.scalar(
+                select(ManagedStore).where(ManagedStore.id == store_id).with_for_update()
+            )
+            if locked_store is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Store not found")
         query = (
             select(ManagedStore)
             .join(EdgeNode, EdgeNode.id == ManagedStore.edge_node_id)
@@ -2816,7 +2893,7 @@ def create_app(
         store = db.scalar(query)
         if store is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Store not found")
-        return store
+        return locked_store or store
 
     def require_online_edge(node: EdgeNode) -> None:
         if node.health_status != "online":
@@ -2942,7 +3019,7 @@ def create_app(
         user: User = Depends(current_user),
         db: Session = Depends(get_db),
     ):
-        store = accessible_store(db, store_id, user)
+        store = accessible_store(db, store_id, user, for_update=True)
         node = db.get(EdgeNode, store.edge_node_id)
         if not store.enabled or not node.enabled:
             raise HTTPException(status.HTTP_409_CONFLICT, "Store or edge node is disabled")
@@ -3010,7 +3087,7 @@ def create_app(
         user: User = Depends(current_user),
         db: Session = Depends(get_db),
     ):
-        store = accessible_store(db, store_id, user)
+        store = accessible_store(db, store_id, user, for_update=True)
         lease = active_store_lease(db, store.id, user.id, body.device_id)
         if lease is None or lease.id != body.lease_id:
             raise HTTPException(status.HTTP_409_CONFLICT, "Store lease is not active")
