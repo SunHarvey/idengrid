@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select
 
+import cloudbrowser.app as app_module
 from cloudbrowser.app import create_app
 from cloudbrowser.models import AuditEvent, EdgeNode, NodeEnrollment, NodeRegistrationRequest
 from cloudbrowser.runner import FakeBrowserRunner
@@ -385,6 +386,90 @@ def test_admin_list_is_safe_and_accept_binds_ip_creates_disabled_node(registrati
         audit_text = "".join(event.details_json for event in events)
         assert node.shared_secret not in audit_text
         assert enrollment.report_token_hash not in audit_text
+
+
+def test_admin_list_hides_successful_registration_history_after_seven_days(
+    registration_system, monkeypatch,
+):
+    now = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(app_module, "datetime", FrozenDateTime)
+    common = {
+        "public_key_pem": "test-public-key",
+        "reported_hostname": "history-edge",
+        "platform": "linux",
+        "actual_public_ipv4": "8.8.8.8",
+        "os_name": "Rocky Linux 9",
+        "cpu_count": 2,
+        "memory_total_bytes": 1024,
+        "disk_total_bytes": 2048,
+        "agent_version": "1.0.0",
+        "challenge_expires_at": now + timedelta(hours=1),
+    }
+    with registration_system.app.state.db() as db:
+        db.add_all(
+            [
+                NodeRegistrationRequest(
+                    id="online-recent",
+                    status="online",
+                    public_key_fingerprint="1" * 64,
+                    machine_fingerprint="2" * 64,
+                    updated_at=now - timedelta(days=6),
+                    **common,
+                ),
+                NodeRegistrationRequest(
+                    id="online-cutoff",
+                    status="online",
+                    public_key_fingerprint="3" * 64,
+                    machine_fingerprint="4" * 64,
+                    updated_at=now - timedelta(days=7),
+                    **common,
+                ),
+                NodeRegistrationRequest(
+                    id="rejected-old",
+                    status="rejected",
+                    public_key_fingerprint="5" * 64,
+                    machine_fingerprint="6" * 64,
+                    updated_at=now - timedelta(days=30),
+                    **common,
+                ),
+                NodeRegistrationRequest(
+                    id="failed-old",
+                    status="failed",
+                    public_key_fingerprint="7" * 64,
+                    machine_fingerprint="8" * 64,
+                    updated_at=now - timedelta(days=30),
+                    **common,
+                ),
+                NodeRegistrationRequest(
+                    id="pending-old",
+                    status="pending_approval",
+                    public_key_fingerprint="9" * 64,
+                    machine_fingerprint="a" * 64,
+                    updated_at=now - timedelta(days=30),
+                    **common,
+                ),
+            ]
+        )
+        db.commit()
+
+    response = registration_system.get(
+        "/api/admin/node-registration-requests", headers=admin_auth(registration_system)
+    )
+    assert response.status_code == 200
+    visible_ids = {item["id"] for item in response.json()}
+    assert "online-recent" in visible_ids
+    assert "online-cutoff" not in visible_ids
+    assert "rejected-old" in visible_ids
+    assert "failed-old" in visible_ids
+    assert "pending-old" in visible_ids
+    with registration_system.app.state.db() as db:
+        assert db.get(NodeRegistrationRequest, "online-cutoff") is not None
 
 
 def test_admin_reject_has_no_node_and_rejected_cannot_claim(registration_system):

@@ -150,7 +150,11 @@ class EdgeHealthMonitor:
                         ),
                     )
                 )
-                if registration and effective_status == "online":
+                if (
+                    registration
+                    and effective_status == "online"
+                    and registration.status != "online"
+                ):
                     registration.status = "online"
                     registration.updated_at = self._clock()
                     registration.last_error = None

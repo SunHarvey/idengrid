@@ -1972,6 +1972,7 @@ def create_app(
     ):
         del actor
         now = datetime.now(UTC)
+        successful_history_cutoff = now - timedelta(days=7)
         items = db.scalars(
             select(NodeRegistrationRequest).order_by(NodeRegistrationRequest.created_at.desc())
         ).all()
@@ -1986,7 +1987,17 @@ def create_app(
                 item.challenge_hash = None
                 item.updated_at = now
         db.commit()
-        return [serialize_registration_request(item) for item in items]
+        visible_items = []
+        for item in items:
+            completed_at = (
+                item.updated_at.replace(tzinfo=UTC)
+                if item.updated_at.tzinfo is None
+                else item.updated_at
+            )
+            if item.status == "online" and completed_at <= successful_history_cutoff:
+                continue
+            visible_items.append(item)
+        return [serialize_registration_request(item) for item in visible_items]
 
     def derived_report_token(item: NodeRegistrationRequest, enrollment_id: str) -> str:
         material = f"node-report-v1:{item.registration_token_hash}:{enrollment_id}".encode()

@@ -122,7 +122,7 @@ function renderRegistrationRequests(){
   el.registrationRequestList.appendChild(make('h4','待审批申请'));
   if(pending.length)for(const item of pending)el.registrationRequestList.appendChild(renderCard(item,true));else el.registrationRequestList.appendChild(make('p','当前没有待审批申请。','muted'));
   const historyPanel=make('details',undefined,'registration-history');
-  historyPanel.append(make('summary',`接入申请历史（不代表节点状态） · ${history.length} 条`),make('p','这里记录的是接入申请过程，不是已上线节点的运行状态；正式节点请查看下方“Edge 节点”。','muted'));
+  historyPanel.append(make('summary',`接入申请历史（不代表节点状态） · ${history.length} 条`),make('p','这里记录的是接入申请过程，不是已上线节点的运行状态；接入成功记录保留 7 天，正式节点请查看下方“Edge 节点”。','muted'));
   if(history.length)for(const item of history)historyPanel.appendChild(renderCard(item,false));else historyPanel.appendChild(make('p','当前没有历史记录。','muted'));
   el.registrationRequestList.appendChild(historyPanel);
 }

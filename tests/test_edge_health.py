@@ -974,6 +974,56 @@ def test_monitor_reconciles_ready_enrollment_to_online(tmp_path) -> None:
         assert registration.last_error is None
 
 
+def test_monitor_preserves_success_timestamp_for_online_registration(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'online-registration-timestamp.db'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(engine, expire_on_commit=False)
+    completed_at = datetime(2026, 9, 1, tzinfo=UTC)
+    probe_time = datetime(2026, 9, 20, tzinfo=UTC)
+    with sessions() as db:
+        node = EdgeNode(
+            name="edge-online",
+            endpoint="https://edge-online.example",
+            shared_secret="never-log",
+            expected_public_ipv4="8.8.8.8",
+            enabled=True,
+        )
+        db.add(node)
+        db.flush()
+        db.add(
+            NodeRegistrationRequest(
+                id="registration-online",
+                status="online",
+                public_key_pem="public",
+                public_key_fingerprint="e" * 64,
+                machine_fingerprint="f" * 64,
+                reported_hostname="edge-online",
+                actual_public_ipv4="8.8.8.8",
+                os_name="Rocky Linux 9",
+                cpu_count=2,
+                memory_total_bytes=1024,
+                disk_total_bytes=2048,
+                agent_version="1.0.0",
+                challenge_expires_at=probe_time + timedelta(hours=1),
+                updated_at=completed_at,
+                edge_node_id=node.id,
+            )
+        )
+        db.commit()
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=status_payload("edge-online", "8.8.8.8"))
+        )
+    )
+
+    EdgeHealthMonitor(sessions, client=client, clock=lambda: probe_time).run_once()
+
+    with sessions() as db:
+        registration = db.get(NodeRegistrationRequest, "registration-online")
+        assert registration.status == "online"
+        assert registration.updated_at.replace(tzinfo=UTC) == completed_at
+
+
 def test_monitor_recovers_failed_enrollment_when_node_becomes_online(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'enrollment-recovery.db'}")
     Base.metadata.create_all(engine)
