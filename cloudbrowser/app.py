@@ -1976,6 +1976,23 @@ def create_app(
         items = db.scalars(
             select(NodeRegistrationRequest).order_by(NodeRegistrationRequest.created_at.desc())
         ).all()
+        online_edge_ids = {
+            item.edge_node_id
+            for item in items
+            if item.status == "online" and item.edge_node_id is not None
+        }
+        completed_by_edge: dict[int, datetime] = {}
+        if online_edge_ids:
+            completed_enrollments = db.scalars(
+                select(NodeEnrollment)
+                .where(
+                    NodeEnrollment.edge_node_id.in_(online_edge_ids),
+                    NodeEnrollment.status == "online",
+                )
+                .order_by(NodeEnrollment.updated_at.desc())
+            ).all()
+            for enrollment in completed_enrollments:
+                completed_by_edge.setdefault(enrollment.edge_node_id, enrollment.updated_at)
         for item in items:
             expires = (
                 item.challenge_expires_at.replace(tzinfo=UTC)
@@ -1989,10 +2006,11 @@ def create_app(
         db.commit()
         visible_items = []
         for item in items:
+            completion_value = completed_by_edge.get(item.edge_node_id, item.updated_at)
             completed_at = (
-                item.updated_at.replace(tzinfo=UTC)
-                if item.updated_at.tzinfo is None
-                else item.updated_at
+                completion_value.replace(tzinfo=UTC)
+                if completion_value.tzinfo is None
+                else completion_value
             )
             if item.status == "online" and completed_at <= successful_history_cutoff:
                 continue

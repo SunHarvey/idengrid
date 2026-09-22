@@ -412,6 +412,14 @@ def test_admin_list_hides_successful_registration_history_after_seven_days(
         "challenge_expires_at": now + timedelta(hours=1),
     }
     with registration_system.app.state.db() as db:
+        completed_node = EdgeNode(
+            name="completed-history-edge",
+            endpoint="https://completed-history-edge.example.com",
+            shared_secret="test-shared-secret",
+            expected_public_ipv4="8.8.8.8",
+        )
+        db.add(completed_node)
+        db.flush()
         db.add_all(
             [
                 NodeRegistrationRequest(
@@ -427,7 +435,8 @@ def test_admin_list_hides_successful_registration_history_after_seven_days(
                     status="online",
                     public_key_fingerprint="3" * 64,
                     machine_fingerprint="4" * 64,
-                    updated_at=now - timedelta(days=7),
+                    updated_at=now,
+                    edge_node_id=completed_node.id,
                     **common,
                 ),
                 NodeRegistrationRequest(
@@ -453,6 +462,16 @@ def test_admin_list_hides_successful_registration_history_after_seven_days(
                     machine_fingerprint="a" * 64,
                     updated_at=now - timedelta(days=30),
                     **common,
+                ),
+                NodeEnrollment(
+                    id="online-cutoff-enrollment",
+                    edge_node_id=completed_node.id,
+                    created_by_user_id=1,
+                    token_hash="b" * 64,
+                    status="online",
+                    phase="ready",
+                    expires_at=now + timedelta(days=30),
+                    updated_at=now - timedelta(days=7),
                 ),
             ]
         )
