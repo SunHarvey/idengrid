@@ -1972,7 +1972,7 @@ def create_app(
     ):
         del actor
         now = datetime.now(UTC)
-        successful_history_cutoff = now - timedelta(days=7)
+        history_cutoff = now - timedelta(days=7)
         items = db.scalars(
             select(NodeRegistrationRequest).order_by(NodeRegistrationRequest.created_at.desc())
         ).all()
@@ -1993,6 +1993,7 @@ def create_app(
             ).all()
             for enrollment in completed_enrollments:
                 completed_by_edge.setdefault(enrollment.edge_node_id, enrollment.updated_at)
+        deleted_expired_ids: set[str] = set()
         for item in items:
             expires = (
                 item.challenge_expires_at.replace(tzinfo=UTC)
@@ -2003,16 +2004,26 @@ def create_app(
                 item.status = "expired"
                 item.challenge_hash = None
                 item.updated_at = now
+            updated_at = (
+                item.updated_at.replace(tzinfo=UTC)
+                if item.updated_at.tzinfo is None
+                else item.updated_at
+            )
+            if item.status == "expired" and updated_at <= history_cutoff:
+                deleted_expired_ids.add(item.id)
+                db.delete(item)
         db.commit()
         visible_items = []
         for item in items:
+            if item.id in deleted_expired_ids:
+                continue
             completion_value = completed_by_edge.get(item.edge_node_id, item.updated_at)
             completed_at = (
                 completion_value.replace(tzinfo=UTC)
                 if completion_value.tzinfo is None
                 else completion_value
             )
-            if item.status == "online" and completed_at <= successful_history_cutoff:
+            if item.status == "online" and completed_at <= history_cutoff:
                 continue
             visible_items.append(item)
         return [serialize_registration_request(item) for item in visible_items]

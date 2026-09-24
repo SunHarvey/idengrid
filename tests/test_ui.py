@@ -262,7 +262,8 @@ def test_admin_nodes_has_node_initiated_approval_flow(system):
     assert "等待管理员批准" in page.text
     assert "待审批申请" in page.text
     assert "接入申请历史（不代表节点状态）" in page.text
-    assert "接入成功记录保留 7 天" in page.text
+    assert "接入成功记录展示 7 天" in page.text
+    assert "已过期申请保留 7 天后自动删除" in page.text
     assert "这里记录的是接入申请过程，不是已上线节点的运行状态" in page.text
     assert "正式节点请查看下方“Edge 节点”" in page.text
     assert "该接入申请未完成身份校验，已过期；未创建节点，不影响已上线节点。" in page.text

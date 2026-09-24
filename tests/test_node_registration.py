@@ -491,6 +491,74 @@ def test_admin_list_hides_successful_registration_history_after_seven_days(
         assert db.get(NodeRegistrationRequest, "online-cutoff") is not None
 
 
+def test_admin_list_deletes_expired_registration_history_after_seven_days(
+    registration_system, monkeypatch,
+):
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(app_module, "datetime", FrozenDateTime)
+    common = {
+        "public_key_pem": "expired-test-public-key",
+        "reported_hostname": "expired-history-edge",
+        "platform": "linux",
+        "actual_public_ipv4": "8.8.4.4",
+        "os_name": "Rocky Linux 9",
+        "cpu_count": 2,
+        "memory_total_bytes": 1024,
+        "disk_total_bytes": 2048,
+        "agent_version": "1.0.0",
+        "challenge_expires_at": now - timedelta(days=30),
+    }
+    with registration_system.app.state.db() as db:
+        db.add_all(
+            [
+                NodeRegistrationRequest(
+                    id="expired-recent",
+                    status="expired",
+                    public_key_fingerprint="b" * 64,
+                    machine_fingerprint="c" * 64,
+                    updated_at=now - timedelta(days=6),
+                    **common,
+                ),
+                NodeRegistrationRequest(
+                    id="expired-cutoff",
+                    status="expired",
+                    public_key_fingerprint="d" * 64,
+                    machine_fingerprint="e" * 64,
+                    updated_at=now - timedelta(days=7),
+                    **common,
+                ),
+                NodeRegistrationRequest(
+                    id="rejected-cutoff",
+                    status="rejected",
+                    public_key_fingerprint="f" * 64,
+                    machine_fingerprint="0" * 64,
+                    updated_at=now - timedelta(days=7),
+                    **common,
+                ),
+            ]
+        )
+        db.commit()
+
+    response = registration_system.get(
+        "/api/admin/node-registration-requests", headers=admin_auth(registration_system)
+    )
+    assert response.status_code == 200
+    visible_ids = {item["id"] for item in response.json()}
+    assert "expired-recent" in visible_ids
+    assert "expired-cutoff" not in visible_ids
+    assert "rejected-cutoff" in visible_ids
+    with registration_system.app.state.db() as db:
+        assert db.get(NodeRegistrationRequest, "expired-recent") is not None
+        assert db.get(NodeRegistrationRequest, "expired-cutoff") is None
+        assert db.get(NodeRegistrationRequest, "rejected-cutoff") is not None
+
+
 def test_admin_reject_has_no_node_and_rejected_cannot_claim(registration_system):
     created = prepared_request(registration_system)
     headers = admin_auth(registration_system)
