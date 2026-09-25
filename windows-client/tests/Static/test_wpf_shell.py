@@ -20,6 +20,25 @@ def test_wpf_project_is_self_contained_windows_x64_without_winui():
     assert 'PackageReference Include="System.Security.Cryptography.ProtectedData"' not in project
 
 
+def test_brave_adblock_only_test_build_keeps_adblock_and_disables_extra_shields():
+    config = text("ClientConfiguration.cs")
+    main = text("MainWindow.xaml.cs")
+    manager = text("WindowsStoreProcessManager.cs")
+    script = (ROOT / "Build-IdenGrid-Windows.ps1").read_text(encoding="utf-8")
+
+    assert "BraveAdBlockOnlyMode" in config
+    assert "LoadBraveAdBlockOnlyMode" in config
+    assert "LoadBraveAdBlockOnlyMode()" in main
+    assert "BraveAdBlockOnlyMode" in script
+    assert "brave_ad_block_only_mode" in script
+    assert 'if (_braveAdBlockOnlyMode)' in manager
+    assert 'start.ArgumentList.Add("--enable-features=AdblockOnlyMode")' in manager
+    assert 'if (braveAdBlockOnlyMode)' in manager
+    assert 'shields["adblock_only_mode_enabled"] = true' in manager
+    assert 'shields["adblock_only_mode_enabled"] = braveAdBlockOnlyMode' not in manager
+    assert 'brave["shields"] = shields' in manager
+
+
 def test_api_origin_is_loaded_from_embedded_https_configuration():
     code = text("ClientConfiguration.cs")
     project = text("IdenGrid.Windows.Wpf.csproj")
@@ -332,7 +351,7 @@ def test_each_store_restores_its_previous_browser_session():
 
 def test_brave_product_analytics_is_disabled_without_an_informer():
     manager = (PROJECT / "WindowsStoreProcessManager.cs").read_text(encoding="utf-8")
-    assert "ConfigureBrowserLocalState(profile)" in manager
+    assert "ConfigureBrowserLocalState(profile, braveAdBlockOnlyMode)" in manager
     assert 'p3a["enabled"] = false' in manager
     assert 'p3a["notice_acknowledged"] = true' in manager
 

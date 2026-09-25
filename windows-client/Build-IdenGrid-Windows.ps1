@@ -10,6 +10,7 @@ param(
     [string]$BrowserRuntimeArchivePath,
     [Parameter(Mandatory = $true)]
     [string]$MediaGateResultPath,
+    [switch]$BraveAdBlockOnlyMode,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot "artifacts\IdenGrid.Windows")
 )
 
@@ -51,7 +52,10 @@ try {
 
     New-Item -ItemType Directory -Path $tempDirectory | Out-Null
     New-Item -ItemType Directory -Path $stagingOutput | Out-Null
-    $configJson = @{ api_base_url = $origin.AbsoluteUri } | ConvertTo-Json -Compress
+    $configJson = @{
+        api_base_url = $origin.AbsoluteUri
+        brave_ad_block_only_mode = [bool]$BraveAdBlockOnlyMode
+    } | ConvertTo-Json -Compress
     $utf8NoBom = New-Object System.Text.UTF8Encoding -ArgumentList $false
     [System.IO.File]::WriteAllText($configPath, $configJson, $utf8NoBom)
 

@@ -36,13 +36,18 @@ public sealed class WindowsStoreProcessManager
     private readonly string _applicationRoot;
     private readonly Uri _centralUrl;
     private readonly string _deviceId;
+    private readonly bool _braveAdBlockOnlyMode;
 
     public event Action<string>? StateChanged;
 
-    public WindowsStoreProcessManager(Uri centralUrl, string deviceId)
+    public WindowsStoreProcessManager(
+        Uri centralUrl,
+        string deviceId,
+        bool braveAdBlockOnlyMode = false)
     {
         _centralUrl = centralUrl;
         _deviceId = deviceId;
+        _braveAdBlockOnlyMode = braveAdBlockOnlyMode;
         _applicationRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "IdenGrid");
@@ -481,7 +486,7 @@ public sealed class WindowsStoreProcessManager
         string extension,
         int socksPort)
     {
-        ConfigureBrowserProfile(profile, downloads);
+        ConfigureBrowserProfile(profile, downloads, _braveAdBlockOnlyMode);
         var executable = ResolveBrowserExecutable();
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         start.ArgumentList.Add($"--user-data-dir={profile}");
@@ -496,10 +501,15 @@ public sealed class WindowsStoreProcessManager
         start.ArgumentList.Add("--disable-sync");
         start.ArgumentList.Add("--disable-background-mode");
         start.ArgumentList.Add("--restore-last-session");
+        if (_braveAdBlockOnlyMode)
+            start.ArgumentList.Add("--enable-features=AdblockOnlyMode");
         return Process.Start(start) ?? throw new InvalidOperationException($"无法启动{store.Name}浏览器");
     }
 
-    private static void ConfigureBrowserProfile(string profile, string downloads)
+    private static void ConfigureBrowserProfile(
+        string profile,
+        string downloads,
+        bool braveAdBlockOnlyMode)
     {
         var defaultProfile = Path.Combine(profile, "Default");
         Directory.CreateDirectory(defaultProfile);
@@ -529,10 +539,10 @@ public sealed class WindowsStoreProcessManager
         var stagingPath = preferencesPath + ".idengrid-staging";
         File.WriteAllText(stagingPath, preferences.ToJsonString());
         File.Move(stagingPath, preferencesPath, true);
-        ConfigureBrowserLocalState(profile);
+        ConfigureBrowserLocalState(profile, braveAdBlockOnlyMode);
     }
 
-    private static void ConfigureBrowserLocalState(string profile)
+    private static void ConfigureBrowserLocalState(string profile, bool braveAdBlockOnlyMode)
     {
         var localStatePath = Path.Combine(profile, "Local State");
         JsonObject localState = File.Exists(localStatePath)
@@ -543,6 +553,12 @@ public sealed class WindowsStoreProcessManager
         p3a["enabled"] = false;
         p3a["notice_acknowledged"] = true;
         brave["p3a"] = p3a;
+        if (braveAdBlockOnlyMode)
+        {
+            var shields = brave["shields"] as JsonObject ?? new JsonObject();
+            shields["adblock_only_mode_enabled"] = true;
+            brave["shields"] = shields;
+        }
         brave["dont_ask_for_crash_reporting"] = true;
         localState["brave"] = brave;
         var metrics = localState["user_experience_metrics"] as JsonObject ?? new JsonObject();

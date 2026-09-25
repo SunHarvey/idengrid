@@ -29,13 +29,14 @@ public partial class MainWindow : Window
         InitializeComponent();
         var deviceId = DeviceIdentity.Current();
         var apiBase = ClientConfiguration.LoadApiBaseAddress();
+        var braveAdBlockOnlyMode = ClientConfiguration.LoadBraveAdBlockOnlyMode();
         _http = new HttpClient
         {
             BaseAddress = apiBase,
             Timeout = TimeSpan.FromSeconds(30),
         };
         _api = new NativeApiClient(_http);
-        _processes = new WindowsStoreProcessManager(apiBase, deviceId);
+        _processes = new WindowsStoreProcessManager(apiBase, deviceId, braveAdBlockOnlyMode);
         _processes.StateChanged += _ => Dispatcher.Invoke(ApplyStoreFilter);
         StoreList.ItemsSource = _visibleStores;
         Loaded += async (_, _) => await RestoreSessionAsync();
