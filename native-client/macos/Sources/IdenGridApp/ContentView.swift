@@ -120,11 +120,14 @@ struct ContentView: View {
                     Button {
                         Task { await model.login() }
                     } label: {
-                        Text(LoginPresentation.buttonTitle(isBusy: model.isBusy))
+                        Text(LoginPresentation.buttonTitle(
+                            isBusy: model.isBusy,
+                            retryAfterSeconds: model.loginRetryAfterSeconds
+                        ))
                     }
                     .buttonStyle(BrandLoginButtonStyle())
                     .keyboardShortcut(.defaultAction)
-                    .disabled(model.isBusy)
+                    .disabled(model.isBusy || model.loginRetryAfterSeconds > 0)
                     .padding(.top, 20)
 
                     Group {
@@ -142,6 +145,7 @@ struct ContentView: View {
                     .foregroundStyle(
                         model.statusText.hasPrefix("登录失败")
                             || model.statusText.hasPrefix("请输入")
+                            || model.statusText.hasPrefix("尝试次数过多")
                             || model.statusText == "用户名或者密码错误"
                             ? Color.red
                             : BrandPalette.slate

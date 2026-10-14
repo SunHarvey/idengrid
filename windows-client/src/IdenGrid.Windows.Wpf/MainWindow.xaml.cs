@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private IReadOnlyList<StoreDto> _allStores = [];
     private SessionDto? _session;
     private CancellationTokenSource? _refreshCancellation;
+    private CancellationTokenSource? _loginCooldownCancellation;
     private bool _isRefreshing;
     private int _refreshRetryAttempt;
     private bool _showsPassword;
@@ -45,6 +46,9 @@ public partial class MainWindow : Window
         {
             _refreshCancellation?.Cancel();
             _refreshCancellation?.Dispose();
+            _loginCooldownCancellation?.Cancel();
+            _loginCooldownCancellation?.Dispose();
+            _loginCooldownCancellation = null;
             _http.Dispose();
         };
     }
@@ -73,7 +77,10 @@ public partial class MainWindow : Window
         }
         catch (ApiException error)
         {
-            ShowLoginStatus(LoginPresentation.FailureMessage(error.StatusCode), true);
+            if (error.StatusCode == 429)
+                BeginLoginCooldown(error.RetryAfterSeconds ?? 60);
+            else
+                ShowLoginStatus(LoginPresentation.FailureMessage(error.StatusCode), true);
         }
         catch
         {
@@ -84,8 +91,57 @@ public partial class MainWindow : Window
             PasswordBox.Clear();
             VisiblePasswordBox.Clear();
             SetPasswordVisibility(false);
-            LoginButton.Content = "登录";
-            LoginButton.IsEnabled = true;
+            if (_loginCooldownCancellation is null)
+            {
+                LoginButton.Content = "登录";
+                LoginButton.IsEnabled = true;
+            }
+        }
+    }
+
+    private void BeginLoginCooldown(int retryAfterSeconds)
+    {
+        _loginCooldownCancellation?.Cancel();
+        _loginCooldownCancellation?.Dispose();
+        var cancellation = new CancellationTokenSource();
+        _loginCooldownCancellation = cancellation;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(Math.Max(1, retryAfterSeconds));
+        _ = RunLoginCooldownAsync(deadline, cancellation);
+    }
+
+    private async Task RunLoginCooldownAsync(
+        DateTimeOffset deadline,
+        CancellationTokenSource cancellation)
+    {
+        try
+        {
+            LoginButton.IsEnabled = false;
+            while (true)
+            {
+                var remaining = Math.Max(
+                    0,
+                    (int)Math.Ceiling((deadline - DateTimeOffset.UtcNow).TotalSeconds));
+                if (remaining == 0)
+                    break;
+                LoginButton.Content = $"请等待 {remaining / 60:00}:{remaining % 60:00}";
+                ShowLoginStatus(LoginPresentation.FailureMessage(429, remaining), true);
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellation.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        finally
+        {
+            if (ReferenceEquals(_loginCooldownCancellation, cancellation))
+            {
+                _loginCooldownCancellation = null;
+                cancellation.Dispose();
+                LoginButton.Content = "登录";
+                LoginButton.IsEnabled = true;
+                ShowLoginStatus("可以重新登录", false);
+            }
         }
     }
 

@@ -10,6 +10,7 @@ final class StoreViewModel: ObservableObject {
     @Published private(set) var isAuthenticated = false
     @Published private(set) var statusText = "请登录"
     @Published private(set) var isBusy = false
+    @Published private(set) var loginRetryAfterSeconds = 0
 
     let processes: StoreProcessManager
     private let api: StoreAPI
@@ -21,6 +22,7 @@ final class StoreViewModel: ObservableObject {
     private var allStores: [StoreDTO] = []
     private var storeRefreshTask: Task<Void, Never>?
     private var accessTokenRefreshTask: Task<Void, Never>?
+    private var loginCooldownTask: Task<Void, Never>?
     private var isRefreshingAccessToken = false
     private var refreshRetryAttempt = 0
     private var sessionGeneration = 0
@@ -78,6 +80,7 @@ final class StoreViewModel: ObservableObject {
     }
 
     func login() async {
+        guard !isBusy, loginRetryAfterSeconds == 0 else { return }
         guard !username.isEmpty, !password.isEmpty else {
             statusText = "请输入用户名和密码"
             return
@@ -104,12 +107,44 @@ final class StoreViewModel: ObservableObject {
             guard generation == sessionGeneration, isAuthenticated else { return }
             startStoreAutoRefresh()
             startAccessTokenRefreshScheduler()
+        } catch APIError.rateLimited(let seconds) {
+            guard generation == sessionGeneration else { return }
+            startLoginCooldown(seconds)
         } catch APIError.server(let status, _) {
             guard generation == sessionGeneration else { return }
             statusText = LoginPresentation.loginFailureMessage(statusCode: status)
         } catch {
             guard generation == sessionGeneration else { return }
             statusText = LoginPresentation.loginFailureMessage(statusCode: nil)
+        }
+    }
+
+    private func startLoginCooldown(_ retryAfterSeconds: Int) {
+        loginCooldownTask?.cancel()
+        let deadline = Date().addingTimeInterval(TimeInterval(max(1, retryAfterSeconds)))
+        loginRetryAfterSeconds = max(1, retryAfterSeconds)
+        statusText = LoginPresentation.rateLimitMessage(
+            retryAfterSeconds: loginRetryAfterSeconds
+        )
+        loginCooldownTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let remaining = max(0, Int(ceil(deadline.timeIntervalSinceNow)))
+                self.loginRetryAfterSeconds = remaining
+                if remaining == 0 {
+                    self.statusText = "可以重新登录"
+                    self.loginCooldownTask = nil
+                    return
+                }
+                self.statusText = LoginPresentation.rateLimitMessage(
+                    retryAfterSeconds: remaining
+                )
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
+            }
         }
     }
 
@@ -308,6 +343,9 @@ final class StoreViewModel: ObservableObject {
     func signOut() async {
         let tokenForLogout = accessToken
         sessionGeneration += 1
+        loginCooldownTask?.cancel()
+        loginCooldownTask = nil
+        loginRetryAfterSeconds = 0
         cancelAccessTokenRefreshScheduler()
         storeRefreshTask?.cancel()
         storeRefreshTask = nil

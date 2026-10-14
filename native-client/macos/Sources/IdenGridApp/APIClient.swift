@@ -21,11 +21,13 @@ protocol StoreAPI: Sendable {
 
 enum APIError: LocalizedError {
     case invalidResponse
+    case rateLimited(Int)
     case server(Int, String)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse: return "服务器响应无效"
+        case .rateLimited(let seconds): return "登录尝试过多，请在 \(seconds) 秒后重试"
         case .server(let code, let text): return "服务器错误 \(code)：\(text)"
         }
     }
@@ -55,6 +57,27 @@ final class APIClient: StoreAPI, @unchecked Sendable {
         return url
     }
 
+    private func retryAfterDelay(_ value: String?) -> Int {
+        guard let value else { return 60 }
+        if let seconds = Int(value) {
+            return max(1, seconds)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        for format in [
+            "EEE, dd MMM yyyy HH:mm:ss zzz",
+            "EEEE, dd-MMM-yy HH:mm:ss zzz",
+            "EEE MMM d HH:mm:ss yyyy",
+        ] {
+            formatter.dateFormat = format
+            if let deadline = formatter.date(from: value) {
+                return max(1, Int(ceil(deadline.timeIntervalSinceNow)))
+            }
+        }
+        return 60
+    }
+
     private func request<Response: Decodable, Body: Encodable>(
         _ path: String,
         method: String,
@@ -73,6 +96,11 @@ final class APIClient: StoreAPI, @unchecked Sendable {
         }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        if http.statusCode == 429 {
+            throw APIError.rateLimited(retryAfterDelay(
+                http.value(forHTTPHeaderField: "Retry-After")
+            ))
+        }
         guard (200..<300).contains(http.statusCode) else {
             throw APIError.server(http.statusCode, String(data: data, encoding: .utf8) ?? "")
         }

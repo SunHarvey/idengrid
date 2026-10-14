@@ -22,6 +22,9 @@ Require(session.DeviceSessionId == "device-session-1", "device session DTO");
 Require(LoginPresentation.FailureMessage(401) == "用户名或者密码错误", "401 login message");
 Require(LoginPresentation.FailureMessage(403) == "用户名或者密码错误", "403 login message");
 Require(LoginPresentation.FailureMessage(500) == "登录失败，请稍后重试", "generic login message");
+Require(
+    LoginPresentation.FailureMessage(429, 300) == "尝试次数过多，请在 05:00 后重试",
+    "rate limited login message");
 
 var now = DateTimeOffset.Parse("2026-08-21T12:00:00+00:00");
 var expiry = now.AddMinutes(15);
@@ -69,6 +72,11 @@ var responses = new Queue<HttpResponseMessage>(new[]
     {
         Content = new StringContent("{\"detail\":\"Invalid credentials\"}"),
     },
+    new HttpResponseMessage(System.Net.HttpStatusCode.TooManyRequests)
+    {
+        Content = new StringContent("{\"detail\":\"Too many login attempts\"}"),
+        Headers = { RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(300)) },
+    },
 });
 using var http = new HttpClient(new RecordingHandler(requests, responses))
 {
@@ -107,7 +115,18 @@ catch (ApiException error)
     Require(error.StatusCode == 401, "unauthorized status retained without exposing body");
 }
 
-Console.WriteLine("IdenGrid Windows core contract tests passed: 33");
+try
+{
+    _ = await api.LoginAsync("member", "wrong", "device-1", "Windows PC");
+    throw new InvalidOperationException("FAIL: throttled login must throw");
+}
+catch (ApiException error)
+{
+    Require(error.StatusCode == 429, "throttled status retained");
+    Require(error.RetryAfterSeconds == 300, "retry-after retained");
+}
+
+Console.WriteLine("IdenGrid Windows core contract tests passed: 36");
 
 file sealed class RecordingHandler(
     List<HttpRequestMessage> requests,

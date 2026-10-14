@@ -190,6 +190,19 @@ def test_password_visibility_matches_macos_behavior():
     assert "VisiblePasswordBox.Clear()" in code
 
 
+def test_wpf_login_rate_limit_disables_button_and_counts_down():
+    source = text("MainWindow.xaml.cs")
+    assert "error.StatusCode == 429" in source
+    assert "error.RetryAfterSeconds" in source
+    assert "BeginLoginCooldown" in source
+    assert "RunLoginCooldownAsync" in source
+    assert "LoginButton.IsEnabled = false" in source
+    assert "Task.Delay(TimeSpan.FromSeconds(1)" in source
+    assert "DateTimeOffset.UtcNow.AddSeconds" in source
+    assert "Math.Ceiling((deadline - DateTimeOffset.UtcNow).TotalSeconds)" in source
+    assert "LoginPresentation.FailureMessage(429, remaining)" in source
+
+
 def test_each_store_gets_privacy_extension_without_secrets():
     project = text("IdenGrid.Windows.Wpf.csproj")
     manager = text("WindowsStoreProcessManager.cs")

@@ -68,6 +68,16 @@ class User(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(UTC_DATETIME, nullable=True)
 
 
+class NativeLoginThrottle(Base):
+    __tablename__ = "native_login_throttles"
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    penalty_level: Mapped[int] = mapped_column(Integer, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(UTC_DATETIME, default=now)
+    blocked_until: Mapped[datetime | None] = mapped_column(UTC_DATETIME, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UTC_DATETIME, default=now, index=True)
+
+
 class DeviceSession(Base):
     __tablename__ = "device_sessions"
     __table_args__ = (

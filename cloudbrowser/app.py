@@ -7,6 +7,7 @@ import hmac
 import io
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -41,7 +42,9 @@ from fastapi import (
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from itsdangerous import BadSignature, URLSafeSerializer
 from pydantic import BaseModel, Field
-from sqlalchemy import inspect, select, text, update
+from sqlalchemy import delete, inspect, select, text, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -66,6 +69,7 @@ from .models import (
     LocalHistoryEntry,
     LocalTabSnapshot,
     ManagedStore,
+    NativeLoginThrottle,
     NodeEnrollment,
     NodeRegistrationRequest,
     StoreConnectionLease,
@@ -463,6 +467,7 @@ def create_app(
     enrollment_source_ip: Callable[[Request], str | None] | None = None,
     admin_ssh_public_key_file: str = "/data/dist/hermes-admin-ssh.pub",
     bootstrap_topology: dict | None = None,
+    login_clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="IdenGrid 澜序", version="0.1.0")
     engine = create_engine(database_url)
@@ -473,6 +478,7 @@ def create_app(
     viewer_signer = SessionTicketSigner(
         secret_key, ttl_seconds=8 * 60 * 60, salt="browser-viewer-grant"
     )
+    current_login_time = login_clock or (lambda: datetime.now(UTC))
     local_environment_policy = local_environment or {
         "environment_id": "default-v1",
         "timezone": "UTC",
@@ -953,14 +959,137 @@ def create_app(
 
     @app.post("/api/native/login")
     def native_login(body: NativeLoginBody, request: Request, db: Session = Depends(get_db)):
+        now = current_login_time()
+        source_ip = request.client.host if request.client else "unknown"
+        throttle_materials = (
+            ("account_source", body.username.strip().casefold(), source_ip),
+            ("device_source", body.device_id, source_ip),
+            ("source", source_ip),
+        )
+        throttle_thresholds = (5, 5, 20)
+        throttle_keys = [
+            hmac.new(secret_key.encode(), "\0".join(parts).encode(), hashlib.sha256).hexdigest()
+            for parts in throttle_materials
+        ]
+        def lock_throttles(at_time: datetime) -> list[NativeLoginThrottle]:
+            initial_throttles = [
+                {
+                    "key_hash": key,
+                    "failure_count": 0,
+                    "penalty_level": 0,
+                    "window_started_at": at_time,
+                    "blocked_until": None,
+                    "updated_at": at_time,
+                }
+                for key in throttle_keys
+            ]
+            dialect_name = db.get_bind().dialect.name
+            if dialect_name == "sqlite":
+                db.execute(
+                    sqlite_insert(NativeLoginThrottle)
+                    .values(initial_throttles)
+                    .on_conflict_do_nothing(index_elements=["key_hash"])
+                )
+            elif dialect_name == "mysql":
+                statement = mysql_insert(NativeLoginThrottle).values(initial_throttles)
+                db.execute(
+                    statement.on_duplicate_key_update(key_hash=statement.inserted.key_hash)
+                )
+            else:
+                raise RuntimeError(
+                    f"Unsupported database dialect for login throttling: {dialect_name}"
+                )
+            throttle_by_key = {
+                item.key_hash: item
+                for item in db.scalars(
+                    select(NativeLoginThrottle)
+                    .where(NativeLoginThrottle.key_hash.in_(throttle_keys))
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).all()
+            }
+            return [throttle_by_key[key] for key in throttle_keys]
+
+        def active_retry_after(
+            throttles: list[NativeLoginThrottle], at_time: datetime
+        ) -> int:
+            retry_after = 0
+            for throttle in throttles:
+                if throttle.blocked_until is None:
+                    continue
+                blocked_until = throttle.blocked_until
+                if blocked_until.tzinfo is None:
+                    blocked_until = blocked_until.replace(tzinfo=UTC)
+                if blocked_until > at_time:
+                    retry_after = max(
+                        retry_after,
+                        math.ceil((blocked_until - at_time).total_seconds()),
+                    )
+            return retry_after
+
+        def begin_throttle_transaction() -> None:
+            if db.get_bind().dialect.name == "sqlite":
+                db.execute(text("BEGIN IMMEDIATE"))
+
+        begin_throttle_transaction()
+        db.execute(
+            delete(NativeLoginThrottle).where(
+                NativeLoginThrottle.updated_at <= now - timedelta(hours=24)
+            )
+        )
+        throttles = lock_throttles(now)
+        retry_after = active_retry_after(throttles, now)
+        db.commit()
+        if retry_after > 0:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "Too many login attempts",
+                headers={"Retry-After": str(retry_after)},
+            )
+
         user = db.scalar(select(User).where(User.username == body.username))
+        user_id = user.id if user is not None else None
+        verified_token_version = user.token_version if user is not None else None
+        password_hash = (
+            user.password_hash
+            if user is not None and user.enabled and user.deleted_at is None
+            else None
+        )
+        db.commit()
         valid = False
-        if user and user.enabled and user.deleted_at is None:
+        if password_hash is not None:
             try:
-                valid = passwords.verify(user.password_hash, body.password)
+                valid = passwords.verify(password_hash, body.password)
             except VerifyMismatchError:
                 valid = False
-        if not valid or not user:
+        if not valid or user_id is None:
+            failure_time = current_login_time()
+            begin_throttle_transaction()
+            throttles = lock_throttles(failure_time)
+            retry_after = active_retry_after(throttles, failure_time)
+            if retry_after > 0:
+                db.commit()
+                raise HTTPException(
+                    status.HTTP_429_TOO_MANY_REQUESTS,
+                    "Too many login attempts",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            triggered_retry_after = 0
+            for throttle, threshold in zip(throttles, throttle_thresholds, strict=True):
+                window_started_at = throttle.window_started_at
+                if window_started_at.tzinfo is None:
+                    window_started_at = window_started_at.replace(tzinfo=UTC)
+                if failure_time - window_started_at >= timedelta(minutes=10):
+                    throttle.failure_count = 0
+                    throttle.window_started_at = failure_time
+                throttle.failure_count += 1
+                throttle.updated_at = failure_time
+                if throttle.failure_count >= threshold:
+                    throttle.failure_count = 0
+                    throttle.penalty_level = min(throttle.penalty_level + 1, 3)
+                    wait = (300, 900, 1800)[throttle.penalty_level - 1]
+                    throttle.blocked_until = failure_time + timedelta(seconds=wait)
+                    triggered_retry_after = max(triggered_retry_after, wait)
             audit(
                 db,
                 "native.login_failed",
@@ -969,9 +1098,49 @@ def create_app(
                 body.username,
                 {"username": body.username, **request_audit_details(request)},
             )
+            if triggered_retry_after > 0:
+                audit(
+                    db,
+                    "native.login_throttled",
+                    None,
+                    "user",
+                    body.username,
+                    {
+                        "username": body.username,
+                        "retry_after_seconds": triggered_retry_after,
+                        **request_audit_details(request),
+                    },
+                )
+                db.commit()
+                raise HTTPException(
+                    status.HTTP_429_TOO_MANY_REQUESTS,
+                    "Too many login attempts",
+                    headers={"Retry-After": str(triggered_retry_after)},
+                )
             db.commit()
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
-        now = datetime.now(UTC)
+        begin_throttle_transaction()
+        user = db.scalar(
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if (
+            user is None
+            or not user.enabled
+            or user.deleted_at is not None
+            or user.password_hash != password_hash
+            or user.token_version != verified_token_version
+        ):
+            db.rollback()
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
+        db.execute(
+            delete(NativeLoginThrottle).where(
+                NativeLoginThrottle.key_hash.in_(throttle_keys[:2])
+            )
+        )
+        now = current_login_time()
         item = db.scalar(
             select(DeviceSession).where(
                 DeviceSession.user_id == user.id, DeviceSession.device_id == body.device_id

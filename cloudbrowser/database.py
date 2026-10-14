@@ -13,6 +13,7 @@ def create_database_engine(database_url: str, **kwargs: Any) -> Engine:
 
     if url.get_backend_name() == "sqlite":
         connect_args.setdefault("check_same_thread", False)
+        connect_args.setdefault("timeout", 30.0)
     elif url.get_backend_name() == "mysql":
         url = url.update_query_dict(
             {"charset": "utf8mb4", "init_command": "SET time_zone = '+00:00'"}

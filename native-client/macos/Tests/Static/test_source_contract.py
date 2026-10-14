@@ -556,7 +556,8 @@ def test_branded_views_keep_existing_actions_and_wide_management_window():
     assert ".foregroundStyle(BrandPalette.ink)" in search
     assert ".padding(.top, 24)" in view
     assert ".padding(.top, 20)" in view
-    assert "LoginPresentation.buttonTitle(isBusy: model.isBusy)" in view
+    assert "LoginPresentation.buttonTitle(" in view
+    assert "retryAfterSeconds: model.loginRetryAfterSeconds" in view
     assert "BrandLoginButtonStyle" in view
     assert "LoginPresentation.inlineStatus" in view
     assert "LoginPresentation.toastMessage" in view
@@ -567,6 +568,26 @@ def test_branded_views_keep_existing_actions_and_wide_management_window():
     assert "loginToast" in view
     assert ".padding(.horizontal, 16)" in view
     assert ".frame(maxWidth: 464)" in view
+
+
+def test_macos_login_rate_limit_disables_button_and_counts_down():
+    api = (SRC / "APIClient.swift").read_text()
+    model = (SRC / "StoreViewModel.swift").read_text()
+    view = (SRC / "ContentView.swift").read_text()
+    presentation = (SRC / "BrandContract.swift").read_text()
+    assert "case rateLimited(Int)" in api
+    assert 'value(forHTTPHeaderField: "Retry-After")' in api
+    assert "loginRetryAfterSeconds" in model
+    assert "guard !isBusy, loginRetryAfterSeconds == 0 else { return }" in model
+    assert "startLoginCooldown" in model
+    assert "Task.sleep(for: .seconds(1))" in model
+    assert "Date().addingTimeInterval" in model
+    assert "deadline.timeIntervalSinceNow" in model
+    assert "retryAfterDelay" in api
+    assert "EEE, dd MMM yyyy HH:mm:ss zzz" in api
+    assert "retryAfterSeconds: model.loginRetryAfterSeconds" in view
+    assert ".disabled(model.isBusy || model.loginRetryAfterSeconds > 0)" in view
+    assert "尝试次数过多，请在" in presentation
 
 
 def test_app_exit_waits_for_browser_and_agent_without_lifecycle_expansion():

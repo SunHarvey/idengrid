@@ -1,3 +1,5 @@
+import Foundation
+
 enum BrandPaletteHex {
     static let navy = "#0B1739"
     static let blue = "#315CFF"
@@ -18,8 +20,16 @@ enum BrandAsset: String, CaseIterable {
 enum LoginPresentation {
     static let toastDurationSeconds = 2.5
 
-    static func buttonTitle(isBusy: Bool) -> String {
-        isBusy ? "登录中…" : "登录"
+    static func buttonTitle(isBusy: Bool, retryAfterSeconds: Int = 0) -> String {
+        if retryAfterSeconds > 0 {
+            return "请等待 \(String(format: "%02d:%02d", retryAfterSeconds / 60, retryAfterSeconds % 60))"
+        }
+        return isBusy ? "登录中…" : "登录"
+    }
+
+    static func rateLimitMessage(retryAfterSeconds: Int) -> String {
+        let remaining = max(1, retryAfterSeconds)
+        return "尝试次数过多，请在 \(String(format: "%02d:%02d", remaining / 60, remaining % 60)) 后重试"
     }
 
     static func loginFailureMessage(statusCode: Int?) -> String {

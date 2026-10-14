@@ -2,9 +2,17 @@ namespace IdenGrid.Core;
 
 public static class LoginPresentation
 {
-    public static string FailureMessage(int? statusCode) => statusCode is 401 or 403
-        ? "用户名或者密码错误"
-        : "登录失败，请稍后重试";
+    public static string FailureMessage(int? statusCode, int? retryAfterSeconds = null)
+    {
+        if (statusCode == 429)
+        {
+            var remaining = Math.Max(1, retryAfterSeconds ?? 60);
+            return $"尝试次数过多，请在 {remaining / 60:00}:{remaining % 60:00} 后重试";
+        }
+        return statusCode is 401 or 403
+            ? "用户名或者密码错误"
+            : "登录失败，请稍后重试";
+    }
 }
 
 public static class AccessTokenRefreshSchedule

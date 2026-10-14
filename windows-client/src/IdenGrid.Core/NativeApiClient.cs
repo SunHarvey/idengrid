@@ -4,9 +4,11 @@ using System.Text.Json.Serialization;
 
 namespace IdenGrid.Core;
 
-public sealed class ApiException(int statusCode) : Exception($"Server rejected request with HTTP {statusCode}")
+public sealed class ApiException(int statusCode, int? retryAfterSeconds = null)
+    : Exception($"Server rejected request with HTTP {statusCode}")
 {
     public int StatusCode { get; } = statusCode;
+    public int? RetryAfterSeconds { get; } = retryAfterSeconds;
 }
 
 public sealed class NativeApiClient
@@ -79,7 +81,8 @@ public sealed class NativeApiClient
         if (body is not null) request.Content = JsonContent.Create(body, options: JsonDefaults.Options);
 
         using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode) throw new ApiException((int)response.StatusCode);
+        if (!response.IsSuccessStatusCode)
+            throw new ApiException((int)response.StatusCode, RetryAfterSeconds(response));
         var value = await response.Content.ReadFromJsonAsync<T>(JsonDefaults.Options, cancellationToken)
             .ConfigureAwait(false);
         return value ?? throw new ApiException((int)response.StatusCode);
@@ -94,7 +97,18 @@ public sealed class NativeApiClient
         using var request = new HttpRequestMessage(method, relativePath);
         request.Headers.Authorization = authorization;
         using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode) throw new ApiException((int)response.StatusCode);
+        if (!response.IsSuccessStatusCode)
+            throw new ApiException((int)response.StatusCode, RetryAfterSeconds(response));
+    }
+
+    private static int? RetryAfterSeconds(HttpResponseMessage response)
+    {
+        var retry = response.Headers.RetryAfter;
+        if (retry?.Delta is TimeSpan delta)
+            return Math.Max(1, (int)Math.Ceiling(delta.TotalSeconds));
+        if (retry?.Date is DateTimeOffset date)
+            return Math.Max(1, (int)Math.Ceiling((date - DateTimeOffset.UtcNow).TotalSeconds));
+        return null;
     }
 
     private sealed record LoginRequest(

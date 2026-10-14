@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeSerializer
 from sqlalchemy import inspect, select
 
+import cloudbrowser.app as app_module
 from cloudbrowser.app import create_app
 from cloudbrowser.models import (
     AuditEvent,
     DeviceSession,
     EdgeNode,
     ManagedStore,
+    NativeLoginThrottle,
     StoreConnectionLease,
 )
 from cloudbrowser.runner import FakeBrowserRunner
@@ -26,7 +30,18 @@ PASSWORD = "Admin-password-123"
 MEMBER_PASSWORD = "Member-password-123"
 
 
-def make_app(path: Path):
+class MutableClock:
+    def __init__(self, current: datetime):
+        self.current = current
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance(self, **kwargs: float) -> None:
+        self.current += timedelta(**kwargs)
+
+
+def make_app(path: Path, login_clock=None):
     return create_app(
         database_url=f"sqlite:///{path}",
         secret_key=SECRET,
@@ -34,6 +49,7 @@ def make_app(path: Path):
         bootstrap_admin=("admin", PASSWORD),
         bootstrap_topology=EXAMPLE_TOPOLOGY,
         cloud_video_enabled=True,
+        login_clock=login_clock,
     )
 
 
@@ -69,6 +85,368 @@ def test_native_login_accepts_windows_platform_and_persists_device_type(tmp_path
         assert item.device_id == "windows-primary"
         assert item.device_name == "Windows PC"
         assert item.platform == "windows"
+
+
+def test_native_login_fifth_failure_starts_five_minute_cooldown(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-throttle.db", login_clock=clock)
+    payload = {
+        "username": "admin",
+        "password": "wrong-password",
+        "device_id": "windows-primary",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            response = client.post("/api/native/login", json=payload)
+            assert response.status_code == 401
+
+        limited = client.post("/api/native/login", json=payload)
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "300"
+        assert limited.json() == {"detail": "Too many login attempts"}
+
+        payload["password"] = PASSWORD
+        still_limited = client.post("/api/native/login", json=payload)
+        assert still_limited.status_code == 429
+        assert still_limited.headers["retry-after"] == "300"
+
+
+def test_native_login_success_clears_previous_failures(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-success-reset.db", login_clock=clock)
+    payload = {
+        "username": "admin",
+        "password": "wrong-password",
+        "device_id": "windows-primary",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            assert client.post("/api/native/login", json=payload).status_code == 401
+
+        payload["password"] = PASSWORD
+        assert client.post("/api/native/login", json=payload).status_code == 200
+
+        payload["password"] = "wrong-password"
+        for _ in range(4):
+            assert client.post("/api/native/login", json=payload).status_code == 401
+
+
+def test_native_login_repeated_cooldowns_escalate_and_cap_at_thirty_minutes(
+    tmp_path: Path,
+):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-escalation.db", login_clock=clock)
+    payload = {
+        "username": "missing-user",
+        "password": "wrong-password",
+        "device_id": "windows-primary",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app) as client:
+        for expected_wait in (300, 900, 1800, 1800):
+            for _ in range(4):
+                assert client.post("/api/native/login", json=payload).status_code == 401
+            limited = client.post("/api/native/login", json=payload)
+            assert limited.status_code == 429
+            assert limited.headers["retry-after"] == str(expected_wait)
+            clock.advance(seconds=expected_wait + 1)
+
+
+def test_native_login_penalty_resets_after_twenty_four_hours(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-penalty-reset.db", login_clock=clock)
+    payload = {
+        "username": "missing-user",
+        "password": "wrong-password",
+        "device_id": "windows-primary",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            assert client.post("/api/native/login", json=payload).status_code == 401
+        first_cycle = client.post("/api/native/login", json=payload)
+        assert first_cycle.status_code == 429
+        assert first_cycle.headers["retry-after"] == "300"
+
+        clock.advance(hours=24, seconds=1)
+        for _ in range(4):
+            assert client.post("/api/native/login", json=payload).status_code == 401
+        reset_cycle = client.post("/api/native/login", json=payload)
+        assert reset_cycle.status_code == 429
+        assert reset_cycle.headers["retry-after"] == "300"
+
+
+def test_native_login_cooldown_cannot_be_bypassed_by_changing_device(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-device-bypass.db", login_clock=clock)
+    payload = {
+        "username": "admin",
+        "password": "wrong-password",
+        "device_id": "device-one",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            assert client.post("/api/native/login", json=payload).status_code == 401
+        limited = client.post("/api/native/login", json=payload)
+        assert limited.status_code == 429
+
+        payload["password"] = PASSWORD
+        payload["device_id"] = "device-two"
+        bypass = client.post("/api/native/login", json=payload)
+        assert bypass.status_code == 429
+        assert bypass.headers["retry-after"] == "300"
+
+
+def test_native_login_cooldown_cannot_be_bypassed_by_changing_username(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-username-bypass.db", login_clock=clock)
+    payload = {
+        "username": "missing-user-one",
+        "password": "wrong-password",
+        "device_id": "device-one",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            assert client.post("/api/native/login", json=payload).status_code == 401
+        assert client.post("/api/native/login", json=payload).status_code == 429
+
+        payload["username"] = "missing-user-two"
+        bypass = client.post("/api/native/login", json=payload)
+        assert bypass.status_code == 429
+        assert bypass.headers["retry-after"] == "300"
+
+
+def test_native_login_cooldown_persists_across_restart_and_is_audited(tmp_path: Path):
+    database = tmp_path / "native-login-persistent.db"
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(database, login_clock=clock)
+    payload = {
+        "username": "admin",
+        "password": "wrong-password",
+        "device_id": "device-one",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            assert client.post("/api/native/login", json=payload).status_code == 401
+        assert client.post("/api/native/login", json=payload).status_code == 429
+
+    restarted = make_app(database, login_clock=clock)
+    payload["password"] = PASSWORD
+    with TestClient(restarted) as client:
+        limited = client.post("/api/native/login", json=payload)
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "300"
+
+    with restarted.state.db() as db:
+        assert len(db.scalars(select(NativeLoginThrottle)).all()) == 3
+        events = db.scalars(select(AuditEvent).order_by(AuditEvent.id)).all()
+        assert [event.event_type for event in events].count("native.login_failed") == 5
+        throttled = [event for event in events if event.event_type == "native.login_throttled"]
+        assert len(throttled) == 1
+        assert json.loads(throttled[0].details_json)["retry_after_seconds"] == 300
+        assert "wrong-password" not in "".join(event.details_json for event in events)
+
+
+def test_native_login_source_ip_limit_stops_rotating_usernames_and_devices(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-source-ip.db", login_clock=clock)
+
+    with TestClient(app) as client:
+        for attempt in range(19):
+            response = client.post(
+                "/api/native/login",
+                json={
+                    "username": f"missing-user-{attempt}",
+                    "password": "wrong-password",
+                    "device_id": f"device-{attempt}",
+                    "device_name": "Windows PC",
+                    "platform": "windows",
+                },
+            )
+            assert response.status_code == 401
+
+        limited = client.post(
+            "/api/native/login",
+            json={
+                "username": "missing-user-19",
+                "password": "wrong-password",
+                "device_id": "device-19",
+                "device_name": "Windows PC",
+                "platform": "windows",
+            },
+        )
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "300"
+
+
+def test_concurrent_native_login_failures_cannot_lose_throttle_updates(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-concurrent.db", login_clock=clock)
+    payload = {
+        "username": "admin",
+        "password": "wrong-password",
+        "device_id": "windows-primary",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    def fail_login(_: int) -> int:
+        with TestClient(app) as concurrent_client:
+            return concurrent_client.post("/api/native/login", json=payload).status_code
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        statuses = list(executor.map(fail_login, range(5)))
+
+    assert sorted(statuses) == [401, 401, 401, 401, 429]
+
+    with TestClient(app) as client:
+        payload["password"] = PASSWORD
+        limited = client.post("/api/native/login", json=payload)
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "300"
+
+
+def test_success_does_not_clear_unrelated_source_failures(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-source-preserved.db", login_clock=clock)
+
+    with TestClient(app) as client:
+        for attempt in range(19):
+            response = client.post(
+                "/api/native/login",
+                json={
+                    "username": f"missing-user-{attempt}",
+                    "password": "wrong-password",
+                    "device_id": f"rotating-device-{attempt}",
+                    "device_name": "Windows PC",
+                    "platform": "windows",
+                },
+            )
+            assert response.status_code == 401
+
+        success = client.post(
+            "/api/native/login",
+            json={
+                "username": "admin",
+                "password": PASSWORD,
+                "device_id": "valid-device",
+                "device_name": "Windows PC",
+                "platform": "windows",
+            },
+        )
+        assert success.status_code == 200
+
+        limited = client.post(
+            "/api/native/login",
+            json={
+                "username": "missing-user-final",
+                "password": "wrong-password",
+                "device_id": "rotating-device-final",
+                "device_name": "Windows PC",
+                "platform": "windows",
+            },
+        )
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "300"
+
+
+def test_native_login_purges_throttle_rows_stale_for_twenty_four_hours(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-stale-cleanup.db", login_clock=clock)
+    failed_payload = {
+        "username": "missing-user",
+        "password": "wrong-password",
+        "device_id": "stale-device",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app, client=("198.51.100.10", 5010)) as client:
+        assert client.post("/api/native/login", json=failed_payload).status_code == 401
+
+    clock.advance(hours=24, seconds=1)
+    with TestClient(app, client=("198.51.100.11", 5011)) as client:
+        success = client.post(
+            "/api/native/login",
+            json={
+                "username": "admin",
+                "password": PASSWORD,
+                "device_id": "fresh-device",
+                "device_name": "Windows PC",
+                "platform": "windows",
+            },
+        )
+        assert success.status_code == 200
+
+    with app.state.db() as db:
+        assert db.scalar(select(NativeLoginThrottle).where(NativeLoginThrottle.updated_at < clock.current)) is None
+
+
+def test_native_login_retry_after_rounds_positive_fraction_up(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 13, 12, 0, tzinfo=UTC))
+    app = make_app(tmp_path / "native-login-retry-ceiling.db", login_clock=clock)
+    payload = {
+        "username": "admin",
+        "password": "wrong-password",
+        "device_id": "windows-primary",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            assert client.post("/api/native/login", json=payload).status_code == 401
+        assert client.post("/api/native/login", json=payload).status_code == 429
+        clock.advance(seconds=299.5)
+        payload["password"] = PASSWORD
+        limited = client.post("/api/native/login", json=payload)
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "1"
+
+
+def test_parallel_independent_failures_do_not_hit_sqlite_lock_errors(tmp_path: Path):
+    app = make_app(tmp_path / "native-login-independent-concurrency.db")
+
+    def fail_login(attempt: int) -> int:
+        payload = {
+            "username": "admin",
+            "password": "wrong-password",
+            "device_id": f"device-{attempt}",
+            "device_name": "Windows PC",
+            "platform": "windows",
+        }
+        with TestClient(
+            app,
+            client=(f"198.51.100.{attempt + 1}", 5100 + attempt),
+            raise_server_exceptions=False,
+        ) as concurrent_client:
+            return concurrent_client.post("/api/native/login", json=payload).status_code
+
+    with ThreadPoolExecutor(max_workers=30) as executor:
+        statuses = list(executor.map(fail_login, range(30)))
+
+    assert statuses == [401] * 30
+    with app.state.db() as db:
+        assert len(db.scalars(select(NativeLoginThrottle)).all()) == 90
 
 
 def legacy_login(client: TestClient, username: str = "admin", password: str = PASSWORD) -> str:
@@ -310,6 +688,75 @@ def test_password_change_delete_and_disable_explicitly_revoke_device_sessions(tm
         assert deleted.status_code == 204, deleted.text
     with delete_app.state.db() as db:
         assert db.get(DeviceSession, deleted_session_id).revoked_at is not None
+
+
+@pytest.mark.parametrize("mutation", ["password", "disable", "delete"])
+def test_native_login_revalidates_account_after_password_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+):
+    app = make_app(tmp_path / f"native-login-race-{mutation}.db")
+    with TestClient(app) as client:
+        admin_token = legacy_login(client)
+        member_id = create_member(client, admin_token)
+
+    started = threading.Event()
+    release = threading.Event()
+    original_passwords = app_module.passwords
+
+    class BlockingPasswords:
+        def hash(self, password: str) -> str:
+            return original_passwords.hash(password)
+
+        def verify(self, password_hash: str, password: str) -> bool:
+            if password == MEMBER_PASSWORD:
+                started.set()
+                assert release.wait(timeout=15)
+            return original_passwords.verify(password_hash, password)
+
+    monkeypatch.setattr(app_module, "passwords", BlockingPasswords())
+    payload = {
+        "username": "member",
+        "password": MEMBER_PASSWORD,
+        "device_id": f"race-device-{mutation}",
+        "device_name": "Windows PC",
+        "platform": "windows",
+    }
+
+    with ThreadPoolExecutor(max_workers=1) as executor, TestClient(app) as login_client:
+        future = executor.submit(login_client.post, "/api/native/login", json=payload)
+        assert started.wait(timeout=15)
+        with TestClient(app) as admin_client:
+            if mutation == "password":
+                changed = admin_client.put(
+                    f"/api/admin/users/{member_id}/password",
+                    headers=bearer(admin_token),
+                    json={"password": "Changed-password-123"},
+                )
+                assert changed.status_code == 200, changed.text
+            elif mutation == "disable":
+                disabled = admin_client.put(
+                    f"/api/admin/users/{member_id}/enabled",
+                    headers=bearer(admin_token),
+                    json={"enabled": False},
+                )
+                assert disabled.status_code == 200, disabled.text
+            else:
+                deleted = admin_client.delete(
+                    f"/api/admin/users/{member_id}", headers=bearer(admin_token)
+                )
+                assert deleted.status_code == 204, deleted.text
+        release.set()
+        response = future.result(timeout=15)
+
+    assert response.status_code == 401, response.text
+    with app.state.db() as db:
+        active = db.scalars(
+            select(DeviceSession).where(
+                DeviceSession.user_id == member_id,
+                DeviceSession.revoked_at.is_(None),
+            )
+        ).all()
+        assert active == []
 
 
 def test_native_stores_dto_is_safe_and_preflight_acquires_matching_lease(

@@ -409,6 +409,17 @@ def test_real_mysql_migration_roundtrip_and_cleanup(tmp_path: Path) -> None:
             },
         )
         connection.execute(
+            insert(tables["native_login_throttles"]),
+            {
+                "key_hash": "b" * 64,
+                "failure_count": 4,
+                "penalty_level": 2,
+                "window_started_at": timestamp,
+                "blocked_until": timestamp,
+                "updated_at": timestamp,
+            },
+        )
+        connection.execute(
             insert(tables["audit_events"]),
             {
                 "id": 202,
@@ -429,7 +440,11 @@ def test_real_mysql_migration_roundtrip_and_cleanup(tmp_path: Path) -> None:
             reset_empty_destination=True,
             prepare_target=migrate_mysql_active_uniqueness,
         )
-        assert len(report["tables"]) == 16
+        assert len(report["tables"]) == len(Base.metadata.tables)
+        assert (
+            report["tables"]["native_login_throttles"]["source_sha256"]
+            == report["tables"]["native_login_throttles"]["target_sha256"]
+        )
         assert (
             report["tables"]["local_history_entries"]["source_sha256"]
             == report["tables"]["local_history_entries"]["target_sha256"]
