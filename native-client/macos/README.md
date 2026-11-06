@@ -1,35 +1,41 @@
 # IdenGrid native macOS client
 
-SwiftUI management client for **macOS 13+ on Apple Silicon only**. The package opens directly in Xcode 15+ (`open Package.swift`) and builds from the command line with Swift 5.9. It uses native `URLSession` endpoints under `/v1/native`, Security.framework Keychain storage, a menu-bar controller, one bundled Agent per running store, and a separately bundled Chromium app.
+SwiftUI management client for **macOS 13+ on Apple Silicon**. `Package.swift` declares Swift tools **6.0**; use an Apple Silicon Mac with a compatible Swift toolchain, macOS SDK/Command Line Tools and Rust. Xcode can open the package but is not required for the command-line development build. The current app has a `WindowGroup`, **not** a menu-bar controller. It uses native `URLSession` routes under `/v1/native`, Keychain for the refresh token/device session, one bundled Agent per running store and a separately bundled browser.
 
-## User flow
+## User flow and isolation
 
-Open IdenGrid, log in, select/search a store, and press **启动**. Users never need Terminal, ports, certificates, or scripts. The entered password exists only in the view model long enough to submit login and is cleared after every attempt. Only refresh token and device-session identifier enter Keychain.
+Open IdenGrid, log in, select/search a store, and press **启动**. Users do not need Terminal, ports or scripts. Login password is cleared after each attempt; persistent credentials belong in Keychain. Each store has an exclusive lock, runtime and downloads directories, independent Profile and Agent. Existing legacy `IdenGrid/Profiles/<store>/Profile` directories are used in place, not moved; new profiles use `IdenGrid/Stores/<store>/Profile`. Do not share one live Profile between devices or versions.
 
-## Runtime bundle contract
+The management client writes a short-lived Agent configuration to a mode-`0600` file and launches `idengrid-agent --config <path>` (Unix-only file option); it removes this config after authenticated readiness. It sends newline-delimited JSON `status`/`shutdown`/`update_token` requests with a control capability over a mode-`0600` Unix socket. There is **no** `GET /v1/status` HTTP endpoint. Status includes `status`, `socks_host`, `socks_port`, `store_id`, `device_id` and optional `edge_latency`; the client constructs its local SOCKS URL from host/port, verifies the expected exit IP, then launches its bundled browser with isolated Profile, proxy, extension, QUIC and WebRTC flags. The SOCKS port is OS-selected (`local_port: 0`) and not exposed to the user.
 
-`build-arm64.sh` assembles (but does not sign) this bundle:
+## Bundle and inputs
 
-- `Contents/MacOS/IdenGrid`
-- `Contents/MacOS/idengrid-agent`
-- `Contents/Frameworks/IdenGrid Browser.app`
-- `Contents/Frameworks/Sparkle.framework`
-- `Contents/Resources/Extension`
+From the repository root, `native-client/release/scripts/build-arm64.sh` assembles (but does **not** sign) `native-client/release/build/IdenGrid.app`, including:
 
-The Agent config contains the short-lived access credential/control secret and is atomically written mode `0600`. Control readiness and egress status are requested over its authenticated Unix-domain socket; no user-visible TCP port is allocated. Every store gets an exclusive lock, runtime directory, downloads directory, and profile. If the declared or canonical legacy `IdenGrid/Profiles/<store>/Profile` already exists, it is used in place and is never moved. New profiles use `IdenGrid/Stores/<store>/Profile`.
+- `Contents/MacOS/IdenGrid` and `Contents/MacOS/idengrid-agent`
+- `Contents/Frameworks/IdenGrid Browser.app` and `Sparkle.framework`
+- `Contents/Resources/Extension`, `Brand` and injected `client-config.json`
 
-The expected Agent contract is `idengrid-agent --config <path>` and authenticated `GET /v1/status`, returning readiness, authentication, egress IP, and a loopback `proxyURL`. The config requests an ephemeral loopback proxy (`127.0.0.1:0`); the selected port is internal and never shown in the UI. Chromium is launched only from the nested app bundle with isolated profile/download locations, that verified Agent proxy, managed-policy directory, and bundled extension.
+The checked-in `native-client/release/chromium-manifest.json` currently contains a concrete arm64 revision, HTTPS URL and SHA-256; it is **not** a placeholder. Review its provenance, digest, security currency and distribution rights before a new release rather than replacing it blindly. `fetch-chromium.sh` refuses placeholder/zero digests, non-arm64 hosts/binaries and hash mismatches. No Chromium binary or DMG is committed.
 
-## Release prerequisites
+For a **local-only ad-hoc signed development app**, set a non-secret `IDENGRID_API_BASE_URL` build input and run from the repository root:
 
-1. Replace every placeholder in `release/chromium-manifest.json` with a pinned arm64 artifact revision, HTTPS URL, and real SHA-256. The fetcher intentionally refuses the committed placeholder, zero checksum, non-arm64 host, and non-arm64 binary.
-2. Supply a separately built arm64 Agent through `IDENGRID_AGENT_BINARY`.
-3. Set `IDENGRID_API_BASE_URL`, `IDENGRID_UPDATE_FEED_URL`, and `SPARKLE_PUBLIC_ED_KEY` for the build.
-4. Run the release scripts on Apple Silicon macOS. The build rejects Intel hosts rather than emitting a universal or Intel build.
+```bash
+native-client/release/scripts/verify-on-apple-silicon.sh
+IDENGRID_API_BASE_URL=https://control.example.invalid/ native-client/release/scripts/build-dev-arm64.sh
+```
 
-No Chromium binary or DMG is committed. The notarization script creates a real compressed DMG only after it has a signed app and credentials, submits it, then staples and validates it.
+The first script checks host/toolchain, builds/tests the Agent and Swift client; the second builds the Agent and app, signs ad-hoc and leaves `native-client/release/build/IdenGrid-dev.app`. Its generated Sparkle public key is **not** a production update key. `build-dev-arm64.sh` refuses to replace a running development app. Confirm the resulting bundle version, architecture, code signature and exact path before calling it usable; this development app is neither notarized nor a distributable DMG.
 
-## Verification
+For a **formal release**, use protected build inputs for the Apple Silicon Agent (`IDENGRID_AGENT_BINARY`), HTTPS API origin, update feed, real Sparkle public update key and Developer ID identity. The ordered entry points are `build-arm64.sh` (assemble), `check-licenses-sbom.sh <app>` (license/SBOM gate; requires `syft`), `sign-nested.sh <app>` (nested signing with `DEVELOPER_ID_APPLICATION`), then `notarize-staple-dmg.sh <signed-app>` (requires notary key **path**, key ID and issuer ID). Review each script's prerequisites before use. Do not pass private-key contents in commands or commit them. The notarization script creates, submits, staples and validates an actual DMG, but its success alone does not replace a clean-device launch or browser/Agent/egress acceptance. See [release acceptance](../../docs/RELEASE-ACCEPTANCE.md).
 
-Linux static checks: `uv run --with pytest pytest -q Tests/Static/test_source_contract.py && Tests/Static/check_contract.sh`.
-macOS source tests: `swift test --arch arm64`. Full release: `release/scripts/build-arm64.sh`, signing, compliance, then notarization scripts.
+## Static and runtime verification
+
+From the repository root, with Python test dependencies installed:
+
+```bash
+python3 -m pytest -q native-client/macos/Tests/Static
+bash native-client/macos/Tests/Static/check_contract.sh
+```
+
+Run the shell contract **before creating** `native-client/release/build/IdenGrid.dmg`: it intentionally asserts that this default-path DMG does not exist. The source compile/contract entry point is `native-client/release/scripts/verify-on-apple-silicon.sh` on an Apple Silicon Mac. Static checks and compiler success are not proof of login, Profile isolation, fixed exit, leak prevention, token refresh or Fail Closed; verify those on the exact packaged app and record the result separately.

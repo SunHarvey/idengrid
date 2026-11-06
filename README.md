@@ -106,7 +106,7 @@ $expectedRuntimeManifestSha256 = "0123456789abcdef0123456789abcdef0123456789abcd
   -MediaGateResultPath "C:\Build\Input\brave-media-gate.json"
 ```
 
-示例中的域名、路径和摘要都是占位值。构建脚本会验证 HTTPS 地址、独立提供的运行时清单摘要、归档与逐文件清单、Brave 签名和媒体门禁结果，并通过临时配置资源完成注入，不修改仓库中的示例配置。
+示例中的域名、路径和摘要都是占位值。构建脚本会验证 HTTPS 地址、独立提供的运行时清单摘要、归档与逐文件清单、Brave 签名和媒体门禁结果，并通过临时配置资源完成注入，不修改仓库中的示例配置。**此命令只生成 WPF/Brave 便携目录，不复制 Rust Agent，也不签名或制作 ZIP；不能直接当作完整客户端交付。**详见 [构建与验收](docs/RELEASE-ACCEPTANCE.md)。
 
 ## 安全原则
 

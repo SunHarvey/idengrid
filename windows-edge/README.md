@@ -69,9 +69,11 @@ Never commit the private-key file. Keep it outside the repository with restricti
 
 > Runtime acceptance prerequisite: build and execute the packaged `edge_tunnel --config` path on a clean Windows Server 2025 x64 host, including real ACL, SCM, firewall, TLS/WSS, reboot, and rollback checks.
 
-## Provision config without exposing the secret
+## Configuration sources: formal enrollment versus lab
 
-Create `edge.json` through a protected provisioning channel, based on `templates/edge.json.example`. Do not put its content in a command line, environment variable, transcript, or ticket. The installer accepts only the **path** to this already-protected temporary file, copies it, applies an inheritance-disabled ACL for SYSTEM and LocalService, and deletes only its own non-secret working directory. The provisioning system remains responsible for securely deleting its source file.
+**Formal `-Server` installation:** the operator supplies only the control-plane HTTPS origin. After verifying the signed release manifest and package, the bundled registration helper obtains an administrator-approved claim; the installer constructs `edge.json` from that claim and writes it under a protected ACL. There is **no** `-ProtectedConfigPath` argument in this flow. Confirm the approved claim is bound to the exact signed package digest before installing.
+
+**Isolated `-LabConfig` installation:** provision `edge.json` through a protected channel based on `templates/edge.json.example` and pass only its path with `-ProtectedConfigPath`; also supply an independently verified package SHA-256. This path is for laboratory tests, not a shortcut around formal release signing or approval. Neither flow may put secret contents on the command line, in an environment variable, transcript or ticket. The provisioning system remains responsible for the source file's secure lifecycle; the installer protects the installed copy.
 
 ## Install
 

@@ -106,7 +106,7 @@ $expectedRuntimeManifestSha256 = "0123456789abcdef0123456789abcdef0123456789abcd
   -MediaGateResultPath "C:\Build\Input\brave-media-gate.json"
 ```
 
-The domain, paths, and digest above are placeholders. The build validates the HTTPS origin, independently supplied runtime-manifest digest, archive and per-file inventory, Brave signature, and media-gate result, then injects configuration through a temporary resource without modifying the repository template.
+The domain, paths, and digest above are placeholders. The build validates the HTTPS origin, independently supplied runtime-manifest digest, archive and per-file inventory, Brave signature, and media-gate result, then injects configuration through a temporary resource without modifying the repository template. **This command only produces the WPF/Brave portable directory; it does not stage the Rust Agent, sign the client, or make a ZIP. Do not hand off its output as a complete client.** See [release acceptance](docs/RELEASE-ACCEPTANCE.md).
 
 ## Security Principles
 

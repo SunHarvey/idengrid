@@ -32,7 +32,9 @@
 - 2026 年 10 月的既有验收记录：生产服务端曾验证原生登录前四次失败返回 401、第五次 429 且 `Retry-After=300`；Windows 11 上用内部测试包 `IdenGrid-Windows-Brave-v0.2.5-internal-test.zip`（SHA-256 `c3783b1d2dafb58c316d560c80d741f8a5d30846cf29d4db9ffdfdc81fff3dac`）验证了新版 WPF 会话恢复/授权店铺启动、包内 Agent/Brave、经 Agent 的固定出口和终止 Agent 后浏览器退出，并重新启动店铺。Brave 版本为 1.97.59；内部签名**不是**公众受信发布签名。该记录仅说明当次测试，不保证现在仍在运行或包仍可下载。
 - 上述 Windows 客户端验证**不等于**在 WPF 界面重新输入密码登录；也没有证明 429 倒计时 UI、浏览器级 DNS/WebRTC/QUIC 防泄漏、跨设备同步、全部店铺或公众发布门禁已通过。经 `curl --proxy socks5h` 的固定出口证明数据通道，不替代浏览器防泄漏验收。
 - 当前实际生产版本、数据库备份有效性、Edge 健康、Windows/macOS 构建与证书有效期均需接手者重新读取；不能从此文档推断。
-- **已知交付缺口**：当前 `windows-client/Build-IdenGrid-Windows.ps1` 没有把 Rust Agent 装入便携目录，也不完成签名/ZIP 归档；历史内部测试包的完整组装不能仅凭此脚本复现。具体门禁见 [构建与验收](docs/RELEASE-ACCEPTANCE.md)。
+- **已知交付缺口（Windows）**：当前 `windows-client/Build-IdenGrid-Windows.ps1` 没有把 Rust Agent 装入便携目录，也不完成签名/ZIP 归档；历史内部测试包的完整组装不能仅凭此脚本复现。具体门禁见 [构建与验收](docs/RELEASE-ACCEPTANCE.md)。
+- **已知阻断（Linux Edge 包）**：`scripts/build_edge_package.py` 的清单未包含运行时导入的 `edge_tunnel/config.py` 和 `edge_tunnel/resources.py`。由该脚本新生成的登记安装包不可视为可部署产物，必须修复打包代码、运行干净目标机安装/启动验收后才能发布；源树安装说明不能证明登记安装包可用。见 [运维与恢复](docs/OPERATIONS.md)。
+- **当前缺少可复核的交付链**：历史 Windows ZIP 的摘要只是点时证据；公开仓库没有独立托管的完整包/逐项验收证据目录，也不包含受保护的生产资产台账。取得授权后应核对产物的保管位置、实际字节/签名和环境记录，不要用公开文档替代。
 
 ## 下一位接手者应留下的记录
 
