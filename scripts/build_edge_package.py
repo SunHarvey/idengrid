@@ -18,6 +18,8 @@ ALLOWLIST = [
     "edge_tunnel/__init__.py",
     "edge_tunnel/__main__.py",
     "edge_tunnel/app.py",
+    "edge_tunnel/config.py",
+    "edge_tunnel/resources.py",
     "edge_tunnel/targets.py",
     "edge_tunnel/tickets.py",
     "systemd/edge-tunnel@.service",

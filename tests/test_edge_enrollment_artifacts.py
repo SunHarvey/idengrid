@@ -4,6 +4,8 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -35,6 +37,41 @@ def test_package_build_is_deterministic_and_checksum_matches(tmp_path):
     digest = hashlib.sha256(first.read_bytes()).hexdigest()
     assert first.with_suffix(first.suffix + ".sha256").read_text().split()[0] == digest
     assert b"EDGE_TICKET_SECRET=" not in first.read_bytes()
+
+
+def test_linux_edge_bundle_imports_from_extracted_package(tmp_path):
+    """The enrollment tar must run without unbundled source-tree modules."""
+    bundle = tmp_path / "edge-tunnel.tar.gz"
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts/build_edge_package.py"), "--output", str(bundle)],
+        check=True,
+        capture_output=True,
+    )
+    extracted = tmp_path / "extracted"
+    with tarfile.open(bundle, "r:gz") as archive:
+        for member in archive.getmembers():
+            assert member.isfile()
+            target = (extracted / member.name).resolve()
+            assert target.is_relative_to(extracted.resolve())
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            assert source is not None
+            target.write_bytes(source.read())
+
+    package_root = extracted / "edge-tunnel"
+    code = """import sys
+sys.path.insert(0, sys.argv[1])
+import edge_tunnel.__main__ as entry
+assert entry.__file__.startswith(sys.argv[1])
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(package_root)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_installer_has_safe_dry_run_and_never_echoes_secrets():

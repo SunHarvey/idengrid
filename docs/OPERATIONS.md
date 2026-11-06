@@ -8,12 +8,12 @@
 - HTTPS 网关：`deploy/idengrid-control-caddy.service` 与 `deploy/Caddyfile`；模板从 `/etc/idengrid/caddy.env` 读取配置。控制端/网关的实际代理和证书配置必须在目标机上复核。
 - MySQL 8.4：`deploy/mysql/compose.yaml`、`my.cnf`、`init/`、`mysql.env.example`；Compose 模板只绑定 `127.0.0.1:3306`，持久卷为 `idengrid-mysql-data`。生产数据库以实际部署配置为准；不要从旧 SQLite 回滚备份推断当前业务数据。
 - Edge 健康：`deploy/idengrid-edge-health.service` 与 `.timer`、`scripts/monitor_edge_health.py`。
-- Linux Edge：`edge-tunnel/README.md` 是**源树安装**说明；控制端登记下发的 `scripts/edge-install.sh` 使用由 `scripts/build_edge_package.py` 产生的 tar 包，属于另一条安装路径。当前该打包脚本清单漏了运行时所需的 `edge_tunnel/config.py`、`edge_tunnel/resources.py`（`edge_tunnel/app.py` 会导入）；**不要发布/使用新生成的 tar 包，直到修复清单并在干净目标机完成安装启动验收**。仅在文档中绕过这个缺陷是不安全的。Windows Server Edge 见 `windows-edge/README.md`：正式 `-Server` 从获批注册 claim 构造受保护配置；`-LabConfig` 才使用预先保护的 `-ProtectedConfigPath`，两种流程不得混用。
+- Linux Edge：`edge-tunnel/README.md` 是**源树安装**说明；控制端登记下发的 `scripts/edge-install.sh` 使用由 `scripts/build_edge_package.py` 产生的 tar 包，属于另一条安装路径。打包清单已补齐 `edge_tunnel/config.py`、`edge_tunnel/resources.py`，并新增从解压包导入服务入口的回归测试；本机隔离回环启动 `/healthz` 已通过。**这些检查不等于干净 Rocky Linux 主机的完整登记、服务、网关、TLS 或回滚验收**，发布前还需绑定新包摘要并执行目标机门禁。Windows Server Edge 见 `windows-edge/README.md`：正式 `-Server` 从获批注册 claim 构造受保护配置；`-LabConfig` 才使用预先保护的 `-ProtectedConfigPath`，两种流程不得混用。
 - 环境相关值通过受保护文件或构建参数注入；绝不在源码、命令行、Issue、聊天或普通日志中写入密码、Token、节点密钥、数据库 URL 或能力型下载链接。原有 `SECRET_KEY` 必须保持不变，除非另行设计和审批完整密钥轮换。
 
 ## 控制端登记产物与文件布局
 
-`deploy/idengrid-control.service` 默认从 `/opt/idengrid` 运行，但登记/下载接口在 `cloudbrowser/app.py` 直接读取 `/data/dist/edge-tunnel.tar.gz`、`/data/dist/release-manifest.json`、`/data/dist/release-manifest.json.sig`、`/data/windows-edge/scripts/Install-IdenGridEdge.ps1` 以及 `/data/scripts/install-edge.sh`、`/data/scripts/edge-install.sh` 等固定路径；Linux 安装脚本也经控制端分发。**只复制仓库到 `/opt/idengrid` 并启用 systemd 服务并不能提供这些产物。**受保护部署台账须记录谁构建、审查、签名、校验与放置各文件、实际服务用户的读取权限以及 Caddy/API 对外路由；发布前逐个只读核对文件存在、摘要/签名及服务端响应。绝不能为“补齐目录”复制未验证的旧包或把私钥放入这些目录。当前 Linux Edge tar 打包阻断见上文。
+`deploy/idengrid-control.service` 默认从 `/opt/idengrid` 运行，但登记/下载接口在 `cloudbrowser/app.py` 直接读取 `/data/dist/edge-tunnel.tar.gz`、`/data/dist/release-manifest.json`、`/data/dist/release-manifest.json.sig`、`/data/windows-edge/scripts/Install-IdenGridEdge.ps1` 以及 `/data/scripts/install-edge.sh`、`/data/scripts/edge-install.sh` 等固定路径；Linux 安装脚本也经控制端分发。**只复制仓库到 `/opt/idengrid` 并启用 systemd 服务并不能提供这些产物。**受保护部署台账须记录谁构建、审查、签名、校验与放置各文件、实际服务用户的读取权限以及 Caddy/API 对外路由；发布前依次只读核对文件存在、摘要/签名及服务端响应。绝不能为“补齐目录”复制未验证的旧包或把私钥放入这些目录。Linux Edge 新包虽已通过本机解压导入/回环健康检查，目标主机安装链仍需另行验收。
 
 ## 自动建表/迁移边界
 

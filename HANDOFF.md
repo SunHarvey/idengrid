@@ -33,7 +33,7 @@
 - 上述 Windows 客户端验证**不等于**在 WPF 界面重新输入密码登录；也没有证明 429 倒计时 UI、浏览器级 DNS/WebRTC/QUIC 防泄漏、跨设备同步、全部店铺或公众发布门禁已通过。经 `curl --proxy socks5h` 的固定出口证明数据通道，不替代浏览器防泄漏验收。
 - 当前实际生产版本、数据库备份有效性、Edge 健康、Windows/macOS 构建与证书有效期均需接手者重新读取；不能从此文档推断。
 - **已知交付缺口（Windows）**：当前 `windows-client/Build-IdenGrid-Windows.ps1` 没有把 Rust Agent 装入便携目录，也不完成签名/ZIP 归档；历史内部测试包的完整组装不能仅凭此脚本复现。具体门禁见 [构建与验收](docs/RELEASE-ACCEPTANCE.md)。
-- **已知阻断（Linux Edge 包）**：`scripts/build_edge_package.py` 的清单未包含运行时导入的 `edge_tunnel/config.py` 和 `edge_tunnel/resources.py`。由该脚本新生成的登记安装包不可视为可部署产物，必须修复打包代码、运行干净目标机安装/启动验收后才能发布；源树安装说明不能证明登记安装包可用。见 [运维与恢复](docs/OPERATIONS.md)。
+- **Linux Edge 包修复状态**：`scripts/build_edge_package.py` 现把运行时导入的 `edge_tunnel/config.py`、`edge_tunnel/resources.py` 纳入清单；新增回归测试从新生成的 tar 中独立解压并导入服务入口，本机隔离回环 `/healthz` 冒烟也已通过。这只证明本机包的导入/启动链；**尚未在干净 Rocky Linux 目标机重走登记、systemd、Caddy、TLS 与回滚验收**。见 [运维与恢复](docs/OPERATIONS.md)。
 - **当前缺少可复核的交付链**：历史 Windows ZIP 的摘要只是点时证据；公开仓库没有独立托管的完整包/逐项验收证据目录，也不包含受保护的生产资产台账。取得授权后应核对产物的保管位置、实际字节/签名和环境记录，不要用公开文档替代。
 
 ## 下一位接手者应留下的记录
