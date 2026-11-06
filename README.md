@@ -34,7 +34,7 @@ macOS／Windows 客户端
 
 ## 项目交接
 
-新维护者先阅读 [交接索引](HANDOFF.md)、[运维与恢复门禁](docs/OPERATIONS.md) 和 [客户端构建与验收](docs/RELEASE-ACCEPTANCE.md)。这些公开文档记录代码入口与历史证据边界；实际生产版本、受保护配置、备份和访问权限必须另行核对，不能从仓库推断。
+新维护者先阅读 [交接索引](HANDOFF.md)、[AI Agent 对话决策摘要](docs/AI-AGENT-HANDOFF.md)、[运维与恢复门禁](docs/OPERATIONS.md) 和 [客户端构建与验收](docs/RELEASE-ACCEPTANCE.md)。这些公开文档记录代码入口、产品决策与历史证据边界；实际生产版本、受保护配置、备份和访问权限必须另行核对，不能从仓库推断。
 
 ## 配置方式
 

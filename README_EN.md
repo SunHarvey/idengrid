@@ -34,7 +34,7 @@ The control plane manages users, devices, workspace authorization, connection le
 
 ## Maintainer handoff
 
-New maintainers should start with the [handoff index](HANDOFF.md), [operations and recovery gates](docs/OPERATIONS.md), and [client release acceptance](docs/RELEASE-ACCEPTANCE.md). These public documents identify code entry points and the limits of historical evidence. Verify live production versions, protected configuration, backups, and access rights separately; they cannot be inferred from the repository.
+New maintainers should start with the [handoff index](HANDOFF.md), [AI Agent conversation-decisions brief (Chinese)](docs/AI-AGENT-HANDOFF.md), [operations and recovery gates](docs/OPERATIONS.md), and [client release acceptance](docs/RELEASE-ACCEPTANCE.md). These public documents identify code entry points, product decisions, and the limits of historical evidence. Verify live production versions, protected configuration, backups, and access rights separately; they cannot be inferred from the repository.
 
 ## Configuration
 

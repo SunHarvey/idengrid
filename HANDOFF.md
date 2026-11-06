@@ -5,6 +5,7 @@
 ## 先读什么
 
 1. [README.md](README.md)：产品架构、目录和最小测试命令。
+   [AI Agent 对话决策摘要](docs/AI-AGENT-HANDOFF.md)：本轮协作中已确认的约束、历史证据与接手停止条件（不是生产台账）。
 2. [运维与恢复](docs/OPERATIONS.md)：控制端、数据库和 Edge 的配置来源、变更/回滚门禁。
 3. [构建与验收](docs/RELEASE-ACCEPTANCE.md)：macOS/Windows 构建入口、证据等级、逐项门禁。
 4. 组件说明：[Rust Agent](native-client/agent-rs/README.md)、[macOS](native-client/macos/README.md)、[Linux Edge](edge-tunnel/README.md)、[Windows Edge](windows-edge/README.md)。
