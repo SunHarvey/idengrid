@@ -32,6 +32,10 @@ The control plane manages users, devices, workspace authorization, connection le
 - `config/` — public configuration templates
 - `tests/` — control-plane and client contract tests
 
+## Maintainer handoff
+
+New maintainers should start with the [handoff index](HANDOFF.md), [operations and recovery gates](docs/OPERATIONS.md), and [client release acceptance](docs/RELEASE-ACCEPTANCE.md). These public documents identify code entry points and the limits of historical evidence. Verify live production versions, protected configuration, backups, and access rights separately; they cannot be inferred from the repository.
+
 ## Configuration
 
 Production domains, database connections, node endpoints, and credentials are never hard-coded in source. Create deployment configuration from these examples:
