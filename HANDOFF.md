@@ -28,12 +28,13 @@
 
 ## 版本与证据状态（历史记录，非实时探测）
 
-- 本次文档编写时工作树的 `main` HEAD：`733bda384e123efd226716e2b3afbd7d5be80a4a`（原生登录限流）。这是**源码基线**，不是当前生产版本证明。
+- Linux Edge 打包修复已提交到 GitHub `main`：`0de8ea262d6f978be85d5b137a98226a7a3ede8a`。这是**源码提交**，不是已发布 tar 的摘要，也不能证明生产已升级；接手时仍须读取实时 HEAD 和部署台账。
 - 2026 年 10 月的既有验收记录：生产服务端曾验证原生登录前四次失败返回 401、第五次 429 且 `Retry-After=300`；Windows 11 上用内部测试包 `IdenGrid-Windows-Brave-v0.2.5-internal-test.zip`（SHA-256 `c3783b1d2dafb58c316d560c80d741f8a5d30846cf29d4db9ffdfdc81fff3dac`）验证了新版 WPF 会话恢复/授权店铺启动、包内 Agent/Brave、经 Agent 的固定出口和终止 Agent 后浏览器退出，并重新启动店铺。Brave 版本为 1.97.59；内部签名**不是**公众受信发布签名。该记录仅说明当次测试，不保证现在仍在运行或包仍可下载。
 - 上述 Windows 客户端验证**不等于**在 WPF 界面重新输入密码登录；也没有证明 429 倒计时 UI、浏览器级 DNS/WebRTC/QUIC 防泄漏、跨设备同步、全部店铺或公众发布门禁已通过。经 `curl --proxy socks5h` 的固定出口证明数据通道，不替代浏览器防泄漏验收。
 - 当前实际生产版本、数据库备份有效性、Edge 健康、Windows/macOS 构建与证书有效期均需接手者重新读取；不能从此文档推断。
 - **已知交付缺口（Windows）**：当前 `windows-client/Build-IdenGrid-Windows.ps1` 没有把 Rust Agent 装入便携目录，也不完成签名/ZIP 归档；历史内部测试包的完整组装不能仅凭此脚本复现。具体门禁见 [构建与验收](docs/RELEASE-ACCEPTANCE.md)。
-- **Linux Edge 包修复状态**：`scripts/build_edge_package.py` 现把运行时导入的 `edge_tunnel/config.py`、`edge_tunnel/resources.py` 纳入清单；新增回归测试从新生成的 tar 中独立解压并导入服务入口，本机隔离回环 `/healthz` 冒烟也已通过。这只证明本机包的导入/启动链；**尚未在干净 Rocky Linux 目标机重走登记、systemd、Caddy、TLS 与回滚验收**。见 [运维与恢复](docs/OPERATIONS.md)。
+- **Linux Edge 包修复状态**：`scripts/build_edge_package.py` 现把运行时导入的 `edge_tunnel/config.py`、`edge_tunnel/resources.py` 纳入清单；回归测试从新生成的 tar 独立解压并导入服务入口。本机另已核对包与 `.sha256`、安装解压包后隔离导入、从解压包启动回环 `/healthz`（200）。相关定向测试 164 项通过、Ruff 通过；扩大测试未取得全套通过结论。**这些证据不等于已发布可下载产物，也不等于干净 Rocky Linux 目标机的登记、systemd、Caddy、TLS 与回滚验收。**复现命令和发布门禁见 [构建与验收](docs/RELEASE-ACCEPTANCE.md)及[运维与恢复](docs/OPERATIONS.md)。
+- **尚存的登录安全缺口**：持久化限流只覆盖 `/api/native/login`，管理网页的 `/api/login` 未实施同等限流；历史“第五次 429”只适用于原生入口。需单独修代码与测试，不能靠文档措辞视为已解决。见 [运维安全边界](docs/OPERATIONS.md#安全边界与事故处理)。
 - **当前缺少可复核的交付链**：历史 Windows ZIP 的摘要只是点时证据；公开仓库没有独立托管的完整包/逐项验收证据目录，也不包含受保护的生产资产台账。取得授权后应核对产物的保管位置、实际字节/签名和环境记录，不要用公开文档替代。
 
 ## 下一位接手者应留下的记录

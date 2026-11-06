@@ -29,6 +29,13 @@ The first script checks host/toolchain, builds/tests the Agent and Swift client;
 
 For a **formal release**, use protected build inputs for the Apple Silicon Agent (`IDENGRID_AGENT_BINARY`), HTTPS API origin, update feed, real Sparkle public update key and Developer ID identity. The ordered entry points are `build-arm64.sh` (assemble), `check-licenses-sbom.sh <app>` (license/SBOM gate; requires `syft`), `sign-nested.sh <app>` (nested signing with `DEVELOPER_ID_APPLICATION`), then `notarize-staple-dmg.sh <signed-app>` (requires notary key **path**, key ID and issuer ID). Review each script's prerequisites before use. Do not pass private-key contents in commands or commit them. The notarization script creates, submits, staples and validates an actual DMG, but its success alone does not replace a clean-device launch or browser/Agent/egress acceptance. See [release acceptance](../../docs/RELEASE-ACCEPTANCE.md).
 
+`build-arm64.sh` derives a default appcast URL from the API origin when
+`IDENGRID_UPDATE_FEED_URL` is unset; check the actual `SUFeedURL` and
+`SUPublicEDKey` in the resulting app. These scripts do **not** sign an update
+archive, generate/publish appcast content, or verify downloaded update bytes.
+Sparkle update delivery requires a separate protected signing/feed/release
+process and clean-device update test; a notarized DMG alone is not that proof.
+
 ## Static and runtime verification
 
 From the repository root, with Python test dependencies installed:

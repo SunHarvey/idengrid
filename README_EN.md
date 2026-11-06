@@ -83,7 +83,7 @@ Apple Silicon builds require macOS Command Line Tools and the scripts under `nat
 export IDENGRID_API_BASE_URL="https://api.example.com/"
 ```
 
-Signed updates also require `IDENGRID_UPDATE_FEED_URL`. These values are written into application resources during the build.
+`IDENGRID_UPDATE_FEED_URL` optionally overrides the update address; otherwise the build script derives the default appcast URL from `IDENGRID_API_BASE_URL`. Verify the URL embedded in the release app. Embedding a feed URL does not produce, sign or publish a working update package.
 
 ### Windows client
 

@@ -10,10 +10,13 @@
 - Edge 健康：`deploy/idengrid-edge-health.service` 与 `.timer`、`scripts/monitor_edge_health.py`。
 - Linux Edge：`edge-tunnel/README.md` 是**源树安装**说明；控制端登记下发的 `scripts/edge-install.sh` 使用由 `scripts/build_edge_package.py` 产生的 tar 包，属于另一条安装路径。打包清单已补齐 `edge_tunnel/config.py`、`edge_tunnel/resources.py`，并新增从解压包导入服务入口的回归测试；本机隔离回环启动 `/healthz` 已通过。**这些检查不等于干净 Rocky Linux 主机的完整登记、服务、网关、TLS 或回滚验收**，发布前还需绑定新包摘要并执行目标机门禁。Windows Server Edge 见 `windows-edge/README.md`：正式 `-Server` 从获批注册 claim 构造受保护配置；`-LabConfig` 才使用预先保护的 `-ProtectedConfigPath`，两种流程不得混用。
 - 环境相关值通过受保护文件或构建参数注入；绝不在源码、命令行、Issue、聊天或普通日志中写入密码、Token、节点密钥、数据库 URL 或能力型下载链接。原有 `SECRET_KEY` 必须保持不变，除非另行设计和审批完整密钥轮换。
+- `config/bootstrap.example.json` 所示拓扑是**首次建库种子**：应用写入 `bootstrap_topology_applied_v1` 后不会因编辑种子文件并重启而重新应用。`BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD` 仅在该用户名尚不存在时建号，不会轮换现有管理员密码。已有用户、店铺、节点或授权应经受控管理流程变更；不要清除种子标记或重新生成 `SECRET_KEY` 来强迫重播。
 
 ## 控制端登记产物与文件布局
 
-`deploy/idengrid-control.service` 默认从 `/opt/idengrid` 运行，但登记/下载接口在 `cloudbrowser/app.py` 直接读取 `/data/dist/edge-tunnel.tar.gz`、`/data/dist/release-manifest.json`、`/data/dist/release-manifest.json.sig`、`/data/windows-edge/scripts/Install-IdenGridEdge.ps1` 以及 `/data/scripts/install-edge.sh`、`/data/scripts/edge-install.sh` 等固定路径；Linux 安装脚本也经控制端分发。**只复制仓库到 `/opt/idengrid` 并启用 systemd 服务并不能提供这些产物。**受保护部署台账须记录谁构建、审查、签名、校验与放置各文件、实际服务用户的读取权限以及 Caddy/API 对外路由；发布前依次只读核对文件存在、摘要/签名及服务端响应。绝不能为“补齐目录”复制未验证的旧包或把私钥放入这些目录。Linux Edge 新包虽已通过本机解压导入/回环健康检查，目标主机安装链仍需另行验收。
+`deploy/idengrid-control.service` 默认从 `/opt/idengrid` 运行，但登记/下载接口在 `cloudbrowser/app.py` 直接读取 Linux tar `/data/dist/edge-tunnel.tar.gz` **及其旁置** `/data/dist/edge-tunnel.tar.gz.sha256`；Windows Edge 则读取 `/data/dist/release-manifest.json`、`/data/dist/release-manifest.json.sig` **及该已签名清单命名的同目录版本化 ZIP**。还读取 `/data/windows-edge/scripts/Install-IdenGridEdge.ps1` 以及 `/data/scripts/install-edge.sh`、`/data/scripts/edge-install.sh` 等固定路径；Linux 安装脚本也经控制端分发。**只复制仓库到 `/opt/idengrid` 并启用 systemd 服务并不能提供这些产物。**缺失或不匹配的 Linux 旁置摘要会导致控制端拒绝提供包；Windows ZIP 的大小与摘要须与已签名清单一致。受保护部署台账须记录谁构建、审查、签名、校验与放置各文件、实际服务用户的读取权限以及 Caddy/API 对外路由；发布前依次只读核对成套文件、摘要/签名及服务端响应。绝不能为“补齐目录”复制未验证的旧包或把私钥放入这些目录。Linux Edge 新包虽已通过本机解压导入/回环健康检查，目标主机安装链仍需另行验收。
+
+**Linux Edge 新包交接**：在隔离目录从待发布提交重新构建并校验 `.sha256`（入口和本机测试见 [构建与验收](RELEASE-ACCEPTANCE.md)）；把该次 tar 的完整 SHA-256 与控制端登记 claim 中的 `package_sha256`、实际下载字节及受保护发布记录逐一对应。源码提交、旧 tar、旁置校验文件和控制端当前提供的字节不可相互替代。`scripts/edge-install.sh` 校验下载包后会清空 `/opt/edge-tunnel/*` 再解压、安装 Python 包、写入配置并启用服务；还会**覆盖 `/etc/caddy/Caddyfile`**。先审查是否共用网关，备份网关配置并验证恢复方案；共享 Caddy 的主机不能直接运行这一安装器。只能在已批准的干净目标机或具备快照和回滚方案的维护窗口执行。不得为了补齐 `/data/dist` 而直接上传未经批准的新包；尚无目标机实测记录。
 
 ## 自动建表/迁移边界
 
@@ -21,7 +24,7 @@
 
 ## Linux Edge 安装的宿主机副作用
 
-`scripts/edge-install.sh` 除服务和 Caddy 外，还会修改 firewalld 规则、SSH 登录策略、journald 限额，并在无 swap 时创建 swapfile；有些步骤是宿主机级、不能靠回滚应用目录自动撤销。安装前采集现有 firewall/SSH/journald/swap 状态，审查对现有远程管理通道和其他服务的影响；故障回滚以**变更前快照及资产负责人审批**为依据，只撤销本次确实引入的规则/文件，验证 SSH 与服务存活。禁止在未知主机上直接重跑安装脚本或用猜测的反向命令清理系统设置。
+`scripts/edge-install.sh` 除服务和 Caddy 外，还会覆盖 `/etc/caddy/Caddyfile`、修改 firewalld 规则、SSH 登录策略、journald 限额，并在无 swap 时创建 swapfile；有些步骤是宿主机级、不能靠回滚应用目录自动撤销。安装前采集现有 Caddy/firewall/SSH/journald/swap 状态，审查对现有远程管理通道和其他服务的影响；故障回滚以**变更前快照及资产负责人审批**为依据，只撤销本次确实引入的规则/文件，验证 SSH 与服务存活。禁止在未知主机上直接重跑安装脚本或用猜测的反向命令清理系统设置。
 
 ## 生产变更顺序
 
@@ -38,6 +41,7 @@
 
 ## 安全边界与事故处理
 
-- 登录限流由服务端执行；客户端 `429/Retry-After` 显示属于独立 UI 门禁。登录失败和审计不得写入密码、Token、Cookie 或 HTTPS 路径。
+- **入口范围待修复**：持久化登录限流和 `429/Retry-After` 仅在原生客户端 `/api/native/login` 服务端实现；管理网页使用的 `/api/login` 目前只有失败审计与 401，**没有相同的限流保护**。不能以原生入口测试证明网页入口安全；网页限流需要单独设计、实现和验证，客户端倒计时显示也属于独立 UI 门禁。登录失败和审计不得写入密码、Token、Cookie 或 HTTPS 路径。
+- Linux Edge 的源码 Caddy 模板及登记安装器生成配置**未配置 JSON 访问日志脱敏规则**。如目标机另行启用访问日志，先审查实际 Caddy 配置和采集链，不得记录 Authorization、票据、查询参数或完整敏感 URL；不能从模板推断日志已脱敏。
 - Edge/控制端节点故障不能自动退回本机公网或换到未经授权的 Edge。先保全故障现场，分别检查授权、租约、Agent、WSS、出口和 DNS，勿以禁用安全约束换取“可用”。
 - 生产变更记录中的主机、配置保管人、备份位置和恢复凭据只存于受控系统；公开仓库中的 `.example` 使用占位值。访问权缺失时停止生产操作并申请授权，不能猜测配置。

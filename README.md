@@ -83,7 +83,7 @@ Apple Silicon 构建需要 macOS Command Line Tools，以及 `native-client/rele
 export IDENGRID_API_BASE_URL="https://api.example.com/"
 ```
 
-如需签名更新，还需要设置 `IDENGRID_UPDATE_FEED_URL`。这些值会在构建时写入应用资源。
+`IDENGRID_UPDATE_FEED_URL` 可覆盖更新地址；未设置时构建脚本从 `IDENGRID_API_BASE_URL` 推导默认 appcast 地址。正式发布须核对应用内实际地址；构建写入 feed 地址不代表已生成、签名或发布可用的更新包。
 
 ### Windows 客户端
 
