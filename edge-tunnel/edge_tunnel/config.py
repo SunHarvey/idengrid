@@ -7,7 +7,9 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import PureWindowsPath
-from typing import Any
+from typing import Any, TypeVar
+
+_Limit = TypeVar("_Limit", int, float)
 
 _NODE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
 _FIELDS = {
@@ -60,9 +62,15 @@ class Settings:
                 ticket_secret=secret,
                 max_connections=int(os.getenv("EDGE_MAX_CONNECTIONS", "64")),
                 max_frame_bytes=int(os.getenv("EDGE_MAX_FRAME_BYTES", "1048576")),
-                max_bytes_per_connection=int(os.getenv("EDGE_MAX_BYTES", "67108864")),
+                max_bytes_per_connection=_env_limit_with_alias(
+                    "EDGE_MAX_BYTES", "EDGE_MAX_BYTES_PER_CONNECTION", "67108864",
+                    int, _INTEGER_LIMITS["max_bytes_per_connection"],
+                ),
                 idle_timeout=float(os.getenv("EDGE_IDLE_TIMEOUT", "60")),
-                max_connection_seconds=float(os.getenv("EDGE_MAX_DURATION", "600")),
+                max_connection_seconds=_env_limit_with_alias(
+                    "EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "600",
+                    float, _FLOAT_LIMITS["max_connection_seconds"],
+                ),
                 connect_timeout=float(os.getenv("EDGE_CONNECT_TIMEOUT", "10")),
                 ticket_max_ttl=int(os.getenv("EDGE_TICKET_MAX_TTL", "60")),
             )
@@ -110,6 +118,23 @@ def _validate_limits(settings: Settings) -> None:
         for name, value in float_values.items()
     ):
         raise RuntimeError("invalid edge configuration limit")
+
+
+def _env_limit_with_alias(
+    canonical: str, alias: str, default: str, parser: type[_Limit], maximum: int
+) -> _Limit:
+    values: list[_Limit] = []
+    for name in (canonical, alias):
+        raw = os.getenv(name)
+        if raw is not None:
+            value = parser(raw)
+            # Validate both inputs, including an alias shadowed by the canonical key.
+            if value <= 0 or value > maximum or (isinstance(value, float) and not math.isfinite(value)):
+                raise RuntimeError("invalid edge configuration limit")
+            values.append(value)
+    if len(values) == 2 and values[0] != values[1]:
+        raise RuntimeError("invalid edge configuration limit")
+    return values[0] if values else parser(default)
 
 
 def _settings_from_mapping(data: dict[str, Any]) -> Settings:

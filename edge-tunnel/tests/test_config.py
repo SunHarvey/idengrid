@@ -1,6 +1,8 @@
 import ctypes
 import json
 import math
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +54,114 @@ def test_settings_load_required_identity_and_limits_from_environment(monkeypatch
     assert settings.node_id == "edge-sg01"
     assert settings.ticket_secret == b"x" * 32
     assert settings.max_connections == 12
+
+
+@pytest.mark.parametrize(
+    ("canonical", "alias", "field", "default", "configured"),
+    [
+        ("EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "max_connection_seconds", 600.0, 3600.0),
+        ("EDGE_MAX_BYTES", "EDGE_MAX_BYTES_PER_CONNECTION", "max_bytes_per_connection", 67_108_864, 536_870_912),
+    ],
+)
+def test_settings_environment_limit_aliases(monkeypatch, canonical, alias, field, default, configured):
+    monkeypatch.setenv("EDGE_NODE_ID", "edge-sg01")
+    monkeypatch.setenv("EDGE_TICKET_SECRET", "x" * 32)
+    monkeypatch.delenv(canonical, raising=False)
+    monkeypatch.delenv(alias, raising=False)
+
+    assert getattr(Settings.from_env(), field) == default
+
+    monkeypatch.setenv(canonical, str(configured))
+    assert getattr(Settings.from_env(), field) == configured
+
+    monkeypatch.delenv(canonical)
+    monkeypatch.setenv(alias, str(configured))
+    assert getattr(Settings.from_env(), field) == configured
+
+
+@pytest.mark.parametrize(
+    ("canonical", "alias", "field", "first", "equivalent", "conflicting"),
+    [
+        ("EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "max_connection_seconds", "3600", "3600.0", "3601"),
+        ("EDGE_MAX_BYTES", "EDGE_MAX_BYTES_PER_CONNECTION", "max_bytes_per_connection", "536870912", "0536870912", "536870913"),
+    ],
+)
+def test_settings_environment_rejects_conflicting_aliases(
+    monkeypatch, canonical, alias, field, first, equivalent, conflicting
+):
+    monkeypatch.setenv("EDGE_NODE_ID", "edge-sg01")
+    monkeypatch.setenv("EDGE_TICKET_SECRET", "x" * 32)
+    monkeypatch.setenv(canonical, first)
+    monkeypatch.setenv(alias, equivalent)
+    assert getattr(Settings.from_env(), field) == (float(first) if field == "max_connection_seconds" else int(first))
+
+    monkeypatch.setenv(alias, conflicting)
+    with pytest.raises(RuntimeError, match="invalid edge configuration"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("canonical", "alias", "invalid"),
+    [
+        ("EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "nan"),
+        ("EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "inf"),
+        ("EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "0"),
+        ("EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "32401"),
+        ("EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "not-a-number"),
+        ("EDGE_MAX_BYTES", "EDGE_MAX_BYTES_PER_CONNECTION", "0"),
+        ("EDGE_MAX_BYTES", "EDGE_MAX_BYTES_PER_CONNECTION", str(1024**4 + 1)),
+        ("EDGE_MAX_BYTES", "EDGE_MAX_BYTES_PER_CONNECTION", "536870912.0"),
+        ("EDGE_MAX_BYTES", "EDGE_MAX_BYTES_PER_CONNECTION", "not-an-int"),
+    ],
+)
+@pytest.mark.parametrize("canonical_present", [False, True])
+def test_settings_environment_rejects_invalid_alias_even_with_valid_canonical(
+    monkeypatch, canonical, alias, invalid, canonical_present
+):
+    monkeypatch.setenv("EDGE_NODE_ID", "edge-sg01")
+    monkeypatch.setenv("EDGE_TICKET_SECRET", "x" * 32)
+    monkeypatch.delenv(canonical, raising=False)
+    if canonical_present:
+        monkeypatch.setenv(canonical, "600" if canonical == "EDGE_MAX_DURATION" else "67108864")
+    monkeypatch.setenv(alias, invalid)
+    with pytest.raises(RuntimeError, match="invalid edge configuration"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize(
+    ("canonical", "alias", "valid"),
+    [
+        ("EDGE_MAX_DURATION", "EDGE_MAX_CONNECTION_SECONDS", "600"),
+        ("EDGE_MAX_BYTES", "EDGE_MAX_BYTES_PER_CONNECTION", "67108864"),
+    ],
+)
+def test_settings_environment_rejects_invalid_canonical_with_valid_alias(
+    monkeypatch, canonical, alias, valid
+):
+    monkeypatch.setenv("EDGE_NODE_ID", "edge-sg01")
+    monkeypatch.setenv("EDGE_TICKET_SECRET", "x" * 32)
+    monkeypatch.setenv(canonical, "not-a-number")
+    monkeypatch.setenv(alias, valid)
+    with pytest.raises(RuntimeError, match="invalid edge configuration"):
+        Settings.from_env()
+
+
+def test_example_and_installers_use_canonical_linux_edge_keys(monkeypatch):
+    root = Path(__file__).resolve().parents[2]
+    example = (root / "edge-tunnel/config/edge-tunnel.env.example").read_text()
+    for line in example.splitlines():
+        if line.startswith("EDGE_"):
+            name, value = line.split("=", 1)
+            if name == "EDGE_TICKET_SECRET":
+                value = "x" * 32
+            monkeypatch.setenv(name, value)
+    assert Settings.from_env().max_bytes_per_connection == 67_108_864
+    assert Settings.from_env().max_connection_seconds == 600.0
+
+    for script in ("scripts/install-edge.sh", "scripts/edge-install.sh"):
+        source = (root / script).read_text()
+        for name, resource in (("EDGE_MAX_BYTES", "max_bytes"), ("EDGE_MAX_DURATION", "max_duration")):
+            assert re.search(rf"['\"]{name}['\"]\s*:\s*r\[['\"]{resource}['\"]\]", source)
 
 
 def test_settings_file_loader_is_unavailable_on_linux(tmp_path, monkeypatch):

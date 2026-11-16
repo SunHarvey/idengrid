@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ class Runtime:
         return True
 
     def release(self) -> None:
+        if self.active <= 0:
+            raise RuntimeError("capacity release without acquisition")
         self.active -= 1
 
 
@@ -48,6 +51,8 @@ class ReplayCache:
 Connector = Callable[[str, int, int], Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]]]
 PublicIPv4Provider = Callable[[], Awaitable[str]]
 ResourceProvider = Callable[[], dict[str, int | float]]
+_CLOSE_TIMEOUT = 1.0
+_LOG = logging.getLogger(__name__)
 SETTINGS = web.AppKey("settings", Settings)
 RUNTIME = web.AppKey("runtime", Runtime)
 VERIFIER = web.AppKey("verifier", TicketVerifier)
@@ -138,6 +143,45 @@ def _bearer(request: web.Request) -> str:
     return value[7:]
 
 
+def _observe_close(task: asyncio.Task[None]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+def _abort_writer(writer: asyncio.StreamWriter) -> None:
+    transport = getattr(writer, "transport", None)
+    if transport is not None:
+        try:
+            transport.abort()
+        except Exception:  # noqa: BLE001 - never override the original request failure
+            _LOG.debug("TCP transport abort failed")
+
+
+async def _close_writer(writer: asyncio.StreamWriter) -> None:
+    # A broken peer can fail to close or never finish wait_closed. Neither may
+    # strand admission capacity or replace the request's original exception.
+    try:
+        writer.close()
+    except Exception:  # noqa: BLE001 - cleanup must preserve the original failure
+        _LOG.debug("TCP writer.close failed")
+        _abort_writer(writer)
+    try:
+        close_task = asyncio.create_task(writer.wait_closed())
+    except Exception:  # noqa: BLE001 - wait_closed can fail before returning an awaitable
+        _LOG.debug("TCP writer.wait_closed could not start")
+        _abort_writer(writer)
+        return
+    close_task.add_done_callback(_observe_close)
+    try:
+        await asyncio.wait((close_task,), timeout=_CLOSE_TIMEOUT)
+    finally:
+        if not close_task.done():
+            _abort_writer(writer)
+            close_task.cancel()
+        elif not close_task.cancelled() and close_task.exception() is not None:
+            _abort_writer(writer)
+
+
 async def _relay(
     ws: web.WebSocketResponse,
     reader: asyncio.StreamReader,
@@ -192,12 +236,13 @@ async def _relay(
     except (TimeoutError, ValueError):
         await ws.close(code=1008, message=b"tunnel limit reached")
     finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        writer.close()
-        await writer.wait_closed()
+        try:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            await _close_writer(writer)
 
 
 async def tunnel(request: web.Request) -> web.StreamResponse:
@@ -232,11 +277,12 @@ async def tunnel(request: web.Request) -> web.StreamResponse:
         runtime.denied += 1
         raise web.HTTPBadGateway(text="target connection failed") from exc
     finally:
-        if writer is not None:
-            writer.close()
-            await writer.wait_closed()
-        if acquired:
-            runtime.release()
+        try:
+            if writer is not None:
+                await _close_writer(writer)
+        finally:
+            if acquired:
+                runtime.release()
 
 
 def create_app(

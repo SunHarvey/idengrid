@@ -114,6 +114,20 @@ For the current nodes, use `edge-sg.example.com` and
 `edge-hk.example.com`; point DNS at each node before Caddy obtains a certificate.
 The central domain `api.example.com` is not used as an edge secret or login.
 
+### Linux limit environment names
+
+Use the canonical `EDGE_MAX_DURATION` (seconds) and `EDGE_MAX_BYTES`
+(bidirectional bytes per connection), as the example and both enrollment
+installers do. The Linux environment loader also accepts the legacy
+`EDGE_MAX_CONNECTION_SECONDS` and `EDGE_MAX_BYTES_PER_CONNECTION` respectively
+when the canonical key is absent. If both forms are set, both must be valid
+under the existing limits and numerically equal or startup fails closed.
+Defaults remain 600 seconds and 67108864 bytes; the Windows JSON fields are
+unchanged. On a node configured with only legacy values 3600 seconds and
+536870912 bytes, a future approved upgrade will consume those values rather
+than fall back to the defaults. This change does not activate or edit any
+running node configuration.
+
 ## Development and tests
 
 ```bash
