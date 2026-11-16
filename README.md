@@ -98,7 +98,10 @@ pytest -q windows-client/tests/Static
 ```powershell
 $env:IDENGRID_API_BASE_URL = "https://control.example.invalid/"
 $expectedRuntimeManifestSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+$expectedAgentSha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 .\windows-client\Build-IdenGrid-Windows.ps1 `
+  -AgentPath "C:\Build\Input\idengrid-agent.exe" `
+  -ExpectedAgentSha256 $expectedAgentSha256 `
   -BrowserRuntimePath "C:\Build\Input\BraveRuntime" `
   -BrowserRuntimeManifestPath "C:\Build\Input\brave-runtime-manifest.json" `
   -ExpectedRuntimeManifestSha256 $expectedRuntimeManifestSha256 `
@@ -106,7 +109,7 @@ $expectedRuntimeManifestSha256 = "0123456789abcdef0123456789abcdef0123456789abcd
   -MediaGateResultPath "C:\Build\Input\brave-media-gate.json"
 ```
 
-示例中的域名、路径和摘要都是占位值。构建脚本会验证 HTTPS 地址、独立提供的运行时清单摘要、归档与逐文件清单、Brave 签名和媒体门禁结果，并通过临时配置资源完成注入，不修改仓库中的示例配置。**此命令只生成 WPF/Brave 便携目录，不复制 Rust Agent，也不签名或制作 ZIP；不能直接当作完整客户端交付。**详见 [构建与验收](docs/RELEASE-ACCEPTANCE.md)。
+示例中的域名、路径和摘要都是占位值，须替换为独立取得并核验的真实输入。构建脚本会验证 HTTPS 地址、独立提供的运行时清单摘要、归档与逐文件清单、Brave 签名和媒体门禁结果；另核对 Agent SHA-256 和 Windows x64 PE 标头，复制后复核暂存字节。临时配置资源不修改仓库示例。**此命令不签名、不制作 ZIP；fixture 装配测试不代表真实客户端包通过验收。**详见 [构建与验收](docs/RELEASE-ACCEPTANCE.md)。
 
 ## 安全原则
 

@@ -98,7 +98,10 @@ A full WPF build requires Windows and .NET 10:
 ```powershell
 $env:IDENGRID_API_BASE_URL = "https://control.example.invalid/"
 $expectedRuntimeManifestSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+$expectedAgentSha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 .\windows-client\Build-IdenGrid-Windows.ps1 `
+  -AgentPath "C:\Build\Input\idengrid-agent.exe" `
+  -ExpectedAgentSha256 $expectedAgentSha256 `
   -BrowserRuntimePath "C:\Build\Input\BraveRuntime" `
   -BrowserRuntimeManifestPath "C:\Build\Input\brave-runtime-manifest.json" `
   -ExpectedRuntimeManifestSha256 $expectedRuntimeManifestSha256 `
@@ -106,7 +109,7 @@ $expectedRuntimeManifestSha256 = "0123456789abcdef0123456789abcdef0123456789abcd
   -MediaGateResultPath "C:\Build\Input\brave-media-gate.json"
 ```
 
-The domain, paths, and digest above are placeholders. The build validates the HTTPS origin, independently supplied runtime-manifest digest, archive and per-file inventory, Brave signature, and media-gate result, then injects configuration through a temporary resource without modifying the repository template. **This command only produces the WPF/Brave portable directory; it does not stage the Rust Agent, sign the client, or make a ZIP. Do not hand off its output as a complete client.** See [release acceptance](docs/RELEASE-ACCEPTANCE.md).
+The domain, paths, and digests above are placeholders; replace them with independently verified real inputs. The build validates the HTTPS origin, independently supplied runtime-manifest digest, archive and per-file inventory, Brave signature, and media-gate result. It also checks the Agent SHA-256 and Windows x64 PE header, then checks the staged Agent bytes after copying. Configuration is injected through a temporary resource without modifying the repository template. **This command does not sign the client or create a ZIP; fixture assembly tests do not validate a real deliverable.** See [release acceptance](docs/RELEASE-ACCEPTANCE.md).
 
 ## Security Principles
 

@@ -33,7 +33,7 @@ dotnet run --project .\windows-client\tests\IdenGrid.Core.ContractTests\IdenGrid
 
 ## Windows 11 x86-64
 
-- 当前仓库的 Windows 构建入口：`windows-client/Build-IdenGrid-Windows.ps1`；命令及所需独立运行时清单摘要、Brave 归档、媒体门禁结果见 [README.md](../README.md#本地开发与验证)。这是**便携目录构建**，不是安装器。脚本发布 `IdenGrid.Windows.Wpf.csproj` 并复制/复核 Brave 运行时，但**没有将 Rust `idengrid-agent.exe` 复制进便携目录，也没有完成签名或 ZIP 归档**；历史内部测试包的完整组装流程尚未在该脚本中复现。接手者须补齐并验证可复现的受控打包入口；在此之前不得把单独运行脚本的输出称作完整可交付包。最终目录必须实测包含 `IdenGrid.Windows.exe`、`Components/Browser/brave.exe`、`Components/idengrid-agent.exe`、扩展和运行时 Manifest。缺任一项不得交付。
+- 当前仓库的 Windows 构建入口：`windows-client/Build-IdenGrid-Windows.ps1`；命令及所需独立运行时清单摘要、Brave 归档、媒体门禁结果、Agent 路径与独立 SHA-256 见 [README.md](../README.md#本地开发与验证)。这是**便携目录构建**，不是安装器。脚本发布 WPF、复制/复核 Brave 运行时，并对 Agent 执行摘要和 Windows x64 PE 标头检查，复制至 `Components/idengrid-agent.exe` 后复核暂存字节；但**不完成签名或 ZIP 归档**。fixture 和构建桩只验证装配行为，不代表真实交付包或媒体结果。最终目录仍须用真实输入实测包含 `IdenGrid.Windows.exe`、`Components/Browser/brave.exe`、`Components/idengrid-agent.exe`、扩展和运行时 Manifest。缺任一项不得交付。
 - 浏览器来源、官方可执行文件签名、归档/清单的独立摘要及逐文件匹配必须与**这次**交付包绑定；检查签名证书属于内部还是公众信任。不能凭文件名或旧结果宣称当前包可信。Brave 的技术兼容性不自动赋予再分发/商标/编解码器权利，正式对外发布前须另行确认授权。
 - 在真实 Windows 11 交互会话：先按完整 `ExecutablePath` 确认旧版管理客户端、Brave 和 Agent 均已退出，避免把旧版子进程误算成新版。由最终 ZIP 解压出的**确切管理客户端**启动、登录或恢复会话、显示授权店铺、从 UI 启动店铺，核对包内 Agent/Brave 的实际完整路径。Windows Agent 配置经 stdin 输入，控制通道为本地 Named Pipe；`windows-client/tests/Static/test_windows_agent_packaging.py` 仅检查源码字符串与 CRT 选项，不证明实际 DACL。须在 Windows 实机验证当前用户可控、另一用户被拒和 Agent 失联 Fail Closed。
 - 检查本机 SOCKS、授权 Edge 固定出口与直连出口对照、实际浏览器 HTTPS、DNS/WebRTC/QUIC 防泄漏、独立 Profile/Cookie、下载路径、关闭与 Agent 中断后的 Fail Closed、正常重启后的恢复。`curl --proxy socks5h` 仅证明 Agent 的出口路径；浏览器泄漏测试要在真实页面/浏览器上下文另做。

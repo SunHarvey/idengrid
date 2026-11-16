@@ -255,12 +255,13 @@ public sealed class WindowsStoreProcessManager
                     }
                     finally
                     {
-                        CleanupRecord(record, StoreRuntimeState.Failed);
+                        CleanupRecord(record, StoreRuntimeState.Failed, error);
                     }
                 }
                 else
                 {
-                    await record.CleanupCompletion.Task;
+                    try { await record.CleanupCompletion.Task; }
+                    catch (Exception cleanupError) { throw new AggregateException(error, cleanupError); }
                 }
             }
             else
@@ -328,7 +329,8 @@ public sealed class WindowsStoreProcessManager
     {
         if (!_running.TryGetValue(storeId, out var record))
         {
-            SetState(storeId, StoreRuntimeState.Idle);
+            if (State(storeId) != StoreRuntimeState.Failed)
+                SetState(storeId, StoreRuntimeState.Idle);
             return;
         }
 
@@ -356,7 +358,7 @@ public sealed class WindowsStoreProcessManager
         }
         finally
         {
-            CleanupRecord(record, StoreRuntimeState.Idle);
+            CleanupRecord(record, StoreRuntimeState.Idle, stopError);
         }
         if (stopError is not null) throw stopError;
     }
@@ -624,21 +626,29 @@ public sealed class WindowsStoreProcessManager
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(timeout);
         Exception? last = null;
-        while (DateTimeOffset.UtcNow < deadline)
+        try
         {
-            try
+            while (true)
             {
-                return await RequestAsync(pipeName, capability, "status", cancellationToken);
-            }
-            catch (Exception error) when (error is IOException or TimeoutException)
-            {
-                last = error;
-                await Task.Delay(250, cancellationToken);
+                budget.Token.ThrowIfCancellationRequested();
+                try
+                {
+                    return await RequestAsync(pipeName, capability, "status", budget.Token);
+                }
+                catch (Exception error) when (error is IOException or TimeoutException)
+                {
+                    last = error;
+                    await Task.Delay(250, budget.Token);
+                }
             }
         }
-        throw new TimeoutException("Agent就绪超时", last);
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && budget.IsCancellationRequested)
+        {
+            throw new TimeoutException("Agent就绪超时", last);
+        }
     }
 
     private static async Task<AgentStatus> RequestAsync(
@@ -648,24 +658,38 @@ public sealed class WindowsStoreProcessManager
         CancellationToken cancellationToken,
         string? nativeAccessToken = null)
     {
-        await using var pipe = new NamedPipeClientStream(
-            ".",
-            pipeName,
-            PipeDirection.InOut,
-            PipeOptions.Asynchronous);
-        await pipe.ConnectAsync(1000, cancellationToken);
-        object payload = nativeAccessToken is null
-            ? new { capability, command }
-            : new { capability, command, native_access_token = nativeAccessToken };
-        var request = JsonSerializer.Serialize(payload) + "\n";
-        var bytes = Encoding.UTF8.GetBytes(request);
-        await pipe.WriteAsync(bytes, cancellationToken);
-        await pipe.FlushAsync(cancellationToken);
-        using var reader = new StreamReader(pipe, Encoding.UTF8, false, leaveOpen: true);
-        var line = await reader.ReadLineAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(line)) throw new IOException("Agent没有返回状态");
-        return JsonSerializer.Deserialize<AgentStatus>(line)
-            ?? throw new IOException("Agent状态JSON无效");
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(TimeSpan.FromSeconds(1));
+        try
+        {
+            await using var pipe = new NamedPipeClientStream(
+                ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            await pipe.ConnectAsync(1000, budget.Token);
+            object payload = nativeAccessToken is null
+                ? new { capability, command }
+                : new { capability, command, native_access_token = nativeAccessToken };
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload) + "\n");
+            await pipe.WriteAsync(bytes, budget.Token);
+            await pipe.FlushAsync(budget.Token);
+            using var reader = new StreamReader(pipe, Encoding.UTF8, false, leaveOpen: true);
+            var line = new StringBuilder();
+            var character = new char[1];
+            while (true)
+            {
+                if (await reader.ReadAsync(character.AsMemory(), budget.Token) == 0)
+                    throw new IOException("Agent没有返回完整状态行");
+                if (character[0] == '\n') break;
+                if (line.Length >= 65536) throw new IOException("Agent状态行过长");
+                line.Append(character[0]);
+            }
+            if (string.IsNullOrWhiteSpace(line.ToString())) throw new IOException("Agent没有返回状态");
+            return JsonSerializer.Deserialize<AgentStatus>(line.ToString())
+                ?? throw new IOException("Agent状态JSON无效");
+        }
+        catch (OperationCanceledException error) when (!cancellationToken.IsCancellationRequested && budget.IsCancellationRequested)
+        {
+            throw new TimeoutException("Agent管道请求超时", error);
+        }
     }
 
     private async Task PollEdgeLatencyAsync(
@@ -747,27 +771,41 @@ public sealed class WindowsStoreProcessManager
         }
     }
 
-    private void CleanupRecord(RunningStore record, StoreRuntimeState finalState)
+    private void CleanupRecord(RunningStore record, StoreRuntimeState finalState, Exception? primaryError = null)
     {
+        Exception? cleanupError = null;
         try
         {
-            try { record.LockHandle.Dispose(); } catch { }
+            try { record.LockHandle.Dispose(); }
+            catch (Exception error) { cleanupError = error; }
             if (record.IconHandle != 0)
             {
                 try { _ = DestroyIcon(record.IconHandle); } catch { }
             }
             try { record.IdentityCancellation.Dispose(); } catch { }
-            TryDelete(record.LockPath);
+            try { File.Delete(record.LockPath); }
+            catch (Exception error)
+            {
+                cleanupError = cleanupError is null ? error : new AggregateException(cleanupError, error);
+            }
             _edgeLatencies.TryRemove(record.StoreId, out _);
-            _states[record.StoreId] = finalState;
+            _states[record.StoreId] = cleanupError is null ? finalState : StoreRuntimeState.Failed;
             try { StateChanged?.Invoke(record.StoreId); } catch { }
         }
         finally
         {
             ((ICollection<KeyValuePair<string, RunningStore>>)_running).Remove(
                 new KeyValuePair<string, RunningStore>(record.StoreId, record));
-            record.CleanupCompletion.TrySetResult();
+            if (cleanupError is null) record.CleanupCompletion.TrySetResult();
+            else
+            {
+                record.CleanupCompletion.TrySetException(cleanupError);
+                // Observe even when no concurrent caller awaits cleanup; awaiters still receive the failure.
+                _ = record.CleanupCompletion.Task.Exception;
+            }
         }
+        if (cleanupError is not null)
+            throw primaryError is null ? cleanupError : new AggregateException(primaryError, cleanupError);
     }
 
     private void SetState(string storeId, StoreRuntimeState state)

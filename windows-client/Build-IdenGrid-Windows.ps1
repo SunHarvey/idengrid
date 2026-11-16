@@ -10,6 +10,10 @@ param(
     [string]$BrowserRuntimeArchivePath,
     [Parameter(Mandatory = $true)]
     [string]$MediaGateResultPath,
+    [Parameter(Mandatory = $true)]
+    [string]$AgentPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedAgentSha256,
     [switch]$BraveAdBlockOnlyMode,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot "artifacts\IdenGrid.Windows")
 )
@@ -41,7 +45,44 @@ $configPath = Join-Path $tempDirectory "client-config.json"
 $oldOutputMoved = $false
 $promotionComplete = $false
 
+function Assert-AgentImage([string]$Path, [string]$ExpectedSha256) {
+    if ($ExpectedSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+        throw "ExpectedAgentSha256 must be an independent SHA-256 hex digest."
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Agent executable does not exist: $Path"
+    }
+    $file = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        if ($file.Length -lt 128) { throw "Agent executable is empty or too short."
+        }
+        $reader = [System.IO.BinaryReader]::new($file)
+        if ($reader.ReadUInt16() -ne 0x5a4d) { throw "Agent is not a Windows PE image." }
+        $file.Position = 0x3c
+        $header = $reader.ReadUInt32()
+        if ($header -lt 0x40 -or [long]$header + 26 -gt $file.Length) {
+            throw "Agent PE header is truncated."
+        }
+        $file.Position = $header
+        if ($reader.ReadUInt32() -ne 0x00004550) { throw "Agent is not a Windows PE image." }
+        if ($reader.ReadUInt16() -ne 0x8664) { throw "Agent must target Windows x64 (AMD64)." }
+        $file.Position = $header + 20
+        if ($reader.ReadUInt16() -lt 2) { throw "Agent PE optional header is missing." }
+        if (($reader.ReadUInt16() -band 0x0002) -eq 0) { throw "Agent PE is not executable." }
+        if ($reader.ReadUInt16() -ne 0x20b) { throw "Agent must be a PE32+ executable." }
+    }
+    finally {
+        $file.Dispose()
+    }
+    $actual = ([string](Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash).ToLowerInvariant()
+    if ($actual -ne $ExpectedSha256.ToLowerInvariant()) {
+        throw "Agent SHA-256 does not match ExpectedAgentSha256."
+    }
+}
+
 try {
+    $agentSource = [System.IO.Path]::GetFullPath($AgentPath)
+    Assert-AgentImage $agentSource $ExpectedAgentSha256
     $runtimeValidator = Join-Path $PSScriptRoot "Test-IdenGridBrowserRuntimeManifest.ps1"
     $browserRuntime = & $runtimeValidator `
         -BrowserRuntimePath $BrowserRuntimePath `
@@ -76,6 +117,8 @@ try {
     Get-ChildItem -LiteralPath $browserRuntime.RuntimePath -Force | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $browserDestination -Recurse -Force
     }
+    $agentDestination = Join-Path $stagingOutput "Components/idengrid-agent.exe"
+    Copy-Item -LiteralPath $agentSource -Destination $agentDestination -Force
     # Revalidate the complete copied tree to close the gap between validating
     # the mutable source directory and packaging it after dotnet publish.
     $packagedBrowserRuntime = & $runtimeValidator `
@@ -94,6 +137,8 @@ try {
     if ($packagedManifestHash -ne $browserRuntime.ManifestSha256) {
         throw "Packaged browser manifest changed after provenance validation."
     }
+
+    Assert-AgentImage $agentDestination $ExpectedAgentSha256
 
     # Fail closed: portable output must never contain mutable identity state,
     # credentials, private keys, logs, crash dumps, or debug diagnostics.

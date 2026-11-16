@@ -602,6 +602,8 @@ def test_windows_build_docs_show_every_required_provenance_argument():
         readme = (ROOT.parent / readme_name).read_text(encoding="utf-8")
         example = readme.split("Build-IdenGrid-Windows.ps1", 1)[1].split("```", 1)[0]
         for argument in (
+            "-AgentPath",
+            "-ExpectedAgentSha256",
             "-BrowserRuntimePath",
             "-BrowserRuntimeManifestPath",
             "-ExpectedRuntimeManifestSha256",
@@ -609,6 +611,16 @@ def test_windows_build_docs_show_every_required_provenance_argument():
             "-MediaGateResultPath",
         ):
             assert argument in example
+
+
+def test_agent_is_verified_before_promotion_without_skipping_browser_gates():
+    script = (ROOT / "Build-IdenGrid-Windows.ps1").read_text(encoding="utf-8")
+    assert "Assert-AgentImage $agentSource $ExpectedAgentSha256" in script
+    assert "Assert-AgentImage $agentDestination $ExpectedAgentSha256" in script
+    assert script.index("Copy-Item -LiteralPath $agentSource") < script.index(
+        "Assert-AgentImage $agentDestination"
+    ) < script.index("forbiddenPatterns") < script.index("Move-Item -LiteralPath $stagingOutput")
+    assert script.count("& $runtimeValidator") == 2
 
 
 def test_browser_shutdown_closes_every_visible_top_level_window_for_the_root_process():
