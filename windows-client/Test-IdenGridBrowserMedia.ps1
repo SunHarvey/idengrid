@@ -38,11 +38,11 @@ public static class IdenGridWtsSessions
         public WTS_CONNECTSTATE_CLASS State;
     }
 
-    [DllImport("Wtsapi32.dll", SetLastError = true)]
+    [DllImport("Wtsapi32.dll", EntryPoint = "WTSEnumerateSessionsW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     private static extern bool WTSEnumerateSessions(IntPtr server, int reserved, int version, out IntPtr sessions, out int count);
     [DllImport("Wtsapi32.dll")]
     private static extern void WTSFreeMemory(IntPtr memory);
-    [DllImport("Wtsapi32.dll", SetLastError = true)]
+    [DllImport("Wtsapi32.dll", EntryPoint = "WTSQuerySessionInformationW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     private static extern bool WTSQuerySessionInformation(IntPtr server, int sessionId, WTS_INFO_CLASS infoClass, out IntPtr buffer, out int bytesReturned);
 
     private static string QueryString(int sessionId, WTS_INFO_CLASS infoClass)
